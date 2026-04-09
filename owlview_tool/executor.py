@@ -18,7 +18,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from .models import AppConfig, PartConfig
-from .services import ExternalTools, convert_pdf_first_page_to_jpg, ftp_upload, local_copy, print_with_sumatra, printer_list, save_pdf
+from .services import ExternalTools, convert_pdf_first_page_to_jpg, ftp_upload, local_copy, print_with_sumatra, printer_list, sanitize_filename, save_inputtable_excel, save_pdf
 
 
 @dataclass
@@ -170,6 +170,163 @@ class Runner:
 
     def open_report(self, driver) -> None:
         self._navigate_to_report(driver)
+
+    def _inputtable_url(self) -> str:
+        return f"{self.cfg.common.owlview_home_url.rstrip('/')}/inputtable"
+
+    def _resolve_excel_output_dir(self, part: PartConfig) -> Path:
+        raw = (part.inputtable_excel_output_dir or part.output_dir or ".").strip()
+        token = datetime.now().strftime("%y%m%d")
+        resolved = raw.replace("yymmdd", token)
+        return Path(resolved)
+
+    def _build_excel_filename(self, payload: dict) -> str:
+        today = datetime.now().strftime("%Y%m%d")
+        project = sanitize_filename(str(payload.get("project", "")))
+        episode = sanitize_filename(str(payload.get("episode", "")))
+        base = "owlview_export"
+        if project:
+            base += f"_{project}"
+        if episode:
+            base += f"_{episode}"
+        base += f"_{today}"
+        return sanitize_filename(base) + ".xlsx"
+
+    def _extract_inputtable_payload(self, driver) -> dict:
+        js = r"""
+const strip = (s) => {
+  if (s == null) return '';
+  const str = String(s);
+  if (!/[<>]/.test(str)) return str.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  const div = document.createElement('div');
+  div.innerHTML = str;
+  return (div.textContent || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+};
+const getText = (sel) => {
+  const el = document.querySelector(sel);
+  return el ? (el.textContent || '').trim() : '';
+};
+const findHot = () => {
+  const grid = document.querySelector('#grid');
+  if (!grid) return null;
+  const HT = window.Handsontable;
+  if (HT && typeof HT.getInstance === 'function') {
+    const i = HT.getInstance(grid) || HT.getInstance(grid.querySelector('.ht_master')) || HT.getInstance(grid.querySelector('.handsontable'));
+    if (i) return i;
+  }
+  const $ = window.jQuery || window.$;
+  if ($ && typeof $(grid).handsontable === 'function') {
+    const i = $(grid).handsontable('getInstance');
+    if (i) return i;
+  }
+  return null;
+};
+const hot = findHot();
+if (!hot) return { error: 'Handsontable インスタンス取得失敗' };
+const data = (typeof hot.getData === 'function') ? (hot.getData() || []) : [];
+const colCount = (typeof hot.countCols === 'function') ? hot.countCols() : ((data[0] || []).length);
+const headerRows = [];
+const headerMerges = [];
+const thead = document.querySelector('#grid .ht_clone_top thead') || document.querySelector('#grid .ht_master thead');
+if (thead) {
+  const trs = Array.from(thead.querySelectorAll('tr')).filter(tr => !tr.querySelector('input,select,textarea,button'));
+  const occ = Array.from({length: trs.length}, () => Array(colCount).fill(false));
+  for (let r=0; r<trs.length; r++) {
+    const row = Array(colCount).fill('');
+    let c = 0;
+    const ths = Array.from(trs[r].children).filter(th => th.tagName === 'TH' && !(th.className||'').includes('rowHeader') && !(th.className||'').includes('cornerHeader'));
+    for (const th of ths) {
+      while (c < colCount && occ[r][c]) c++;
+      if (c >= colCount) break;
+      const colspan = Math.max(1, Math.min(colCount - c, parseInt(th.getAttribute('colspan') || '1', 10) || 1));
+      const rowspan = Math.max(1, Math.min(trs.length - r, parseInt(th.getAttribute('rowspan') || '1', 10) || 1));
+      const label = strip((th.querySelector('span.colHeader') || th).textContent || '');
+      row[c] = label;
+      for (let rr = 0; rr < rowspan; rr++) {
+        for (let cc = 0; cc < colspan; cc++) {
+          occ[r+rr][c+cc] = true;
+        }
+      }
+      if (rowspan > 1 || colspan > 1) {
+        headerMerges.push({ s: { r, c }, e: { r: r + rowspan - 1, c: c + colspan - 1 } });
+      }
+      c += colspan;
+    }
+    headerRows.push(row);
+  }
+}
+if (!headerRows.length) {
+  const row = [];
+  for (let c = 0; c < colCount; c++) {
+    try { row.push(strip(hot.getColHeader(c) || '')); } catch (_) { row.push(''); }
+  }
+  headerRows.push(row);
+}
+const aoa = [...headerRows.map(r => r.slice())];
+for (let r = 0; r < data.length; r++) {
+  const row = Array.isArray(data[r]) ? data[r].slice(0, colCount) : [];
+  while (row.length < colCount) row.push('');
+  aoa.push(row.map(v => strip(v)));
+}
+let bodyMerges = [];
+try {
+  const st = (typeof hot.getSettings === 'function') ? hot.getSettings() : null;
+  if (Array.isArray(st && st.mergeCells)) {
+    bodyMerges = st.mergeCells.map(m => ({ row: parseInt(m.row,10), col: parseInt(m.col,10), rowspan: parseInt(m.rowspan||1,10)||1, colspan: parseInt(m.colspan||1,10)||1 }));
+  } else if (typeof hot.getPlugin === 'function') {
+    const p = hot.getPlugin('mergeCells');
+    const list = p?.mergedCellsCollection?.mergedCells || p?.mergedCellsCollection?.mergedCellsArray || p?.mergedCellsCollection?.items || [];
+    bodyMerges = Array.isArray(list) ? list.map(m => ({ row: parseInt(m.row,10), col: parseInt(m.col,10), rowspan: parseInt(m.rowspan||1,10)||1, colspan: parseInt(m.colspan||1,10)||1 })) : [];
+  }
+} catch (_) {}
+const allMerges = [...headerMerges];
+const headerOffset = headerRows.length;
+for (const m of bodyMerges) {
+  if (!Number.isFinite(m.row) || !Number.isFinite(m.col)) continue;
+  allMerges.push({ s: { r: headerOffset + m.row, c: m.col }, e: { r: headerOffset + m.row + Math.max(1,m.rowspan)-1, c: m.col + Math.max(1,m.colspan)-1 } });
+}
+const flat = aoa.map(r => r.slice());
+for (const m of allMerges) {
+  const v = (flat[m.s.r] && flat[m.s.r][m.s.c]) || '';
+  for (let rr = m.s.r; rr <= m.e.r; rr++) {
+    if (!flat[rr]) continue;
+    for (let cc = m.s.c; cc <= m.e.c; cc++) {
+      if (flat[rr][cc] == null || flat[rr][cc] === '') flat[rr][cc] = v;
+    }
+  }
+}
+return {
+  project: getText('.HeaderCommonProjectName span:nth-of-type(2)'),
+  episode: getText('.HeaderCommonEpisodeName span:nth-of-type(2)'),
+  merged_sheet: aoa,
+  flat_sheet: flat,
+  merges: allMerges,
+};
+"""
+        payload = driver.execute_script(js)
+        if not isinstance(payload, dict):
+            raise RuntimeError("inputtableデータ抽出結果が不正です")
+        if payload.get("error"):
+            raise RuntimeError(str(payload.get("error")))
+        return payload
+
+    def _run_inputtable_export_if_enabled(self, driver, part: PartConfig) -> Path | None:
+        if not part.enable_inputtable_excel_export:
+            return None
+        output_dir = self._resolve_excel_output_dir(part)
+        self._log(f"inputtable前処理: 開始 ({part.part_name})")
+        driver.get(self._inputtable_url())
+        self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
+        payload = self._extract_inputtable_payload(driver)
+        out_path = output_dir / self._build_excel_filename(payload)
+        save_inputtable_excel(
+            output_path=out_path,
+            merged_sheet=payload.get("merged_sheet", []),
+            merged_ranges=payload.get("merges", []),
+            flat_sheet=payload.get("flat_sheet", []),
+        )
+        self._log(f"inputtable Excel保存成功: {out_path}")
+        return out_path
 
     def _wait_ready_state(self, driver, timeout: int, label: str) -> None:
         WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return document.readyState") == "complete")
@@ -430,6 +587,8 @@ class Runner:
         self._log("プレビュー開始" if preview_mode else f"開始: {part.part_name}")
         self.open_home(driver)
         self.select_part(driver, part.part_name)
+        if not preview_mode:
+            self._run_inputtable_export_if_enabled(driver, part)
         self.open_report(driver)
 
         outputs: list[Path] = []

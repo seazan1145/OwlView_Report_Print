@@ -532,6 +532,8 @@ class OwlViewApp:
             "paper_width": tk.DoubleVar(value=p.paper_width),
             "paper_height": tk.DoubleVar(value=p.paper_height),
             "jpg_quality": tk.IntVar(value=p.jpg_quality),
+            "enable_inputtable_excel_export": tk.BooleanVar(value=p.enable_inputtable_excel_export),
+            "inputtable_excel_output_dir": tk.StringVar(value=p.inputtable_excel_output_dir),
         }
 
         row = 0
@@ -552,6 +554,17 @@ class OwlViewApp:
             ttk.Label(d, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
             ttk.Entry(d, textvariable=vars[key]).grid(row=row, column=1, sticky="ew", padx=6)
             row += 1
+
+        ttk.Checkbutton(
+            d,
+            text="inputtable からExcelを出力してから report へ進む",
+            variable=vars["enable_inputtable_excel_export"],
+        ).grid(row=row, column=0, columnspan=2, sticky="w", padx=6, pady=3)
+        row += 1
+        ttk.Label(d, text="Excel保存先(yymmdd可)").grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(d, textvariable=vars["inputtable_excel_output_dir"]).grid(row=row, column=1, sticky="ew", padx=6)
+        ttk.Button(d, text="参照", command=lambda: vars["inputtable_excel_output_dir"].set(filedialog.askdirectory() or vars["inputtable_excel_output_dir"].get())).grid(row=row, column=2, padx=6)
+        row += 1
 
         ttk.Checkbutton(d, text="使用する", variable=vars["enabled"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
         ttk.Checkbutton(d, text="実行対象に含める", variable=vars["selected"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
@@ -580,6 +593,8 @@ class OwlViewApp:
             paper_height=float(vars["paper_height"].get()),
             jpg_quality=int(vars["jpg_quality"].get()),
             local_copy_enabled=True,
+            enable_inputtable_excel_export=bool(vars["enable_inputtable_excel_export"].get()),
+            inputtable_excel_output_dir=vars["inputtable_excel_output_dir"].get().strip(),
         )
         errs = new.validate()
         if errs:

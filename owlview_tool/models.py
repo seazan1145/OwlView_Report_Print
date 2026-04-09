@@ -28,6 +28,8 @@ class PartConfig:
     print_range: str = ""
     jpg_quality: int = 90
     local_copy_enabled: bool = False
+    enable_inputtable_excel_export: bool = False
+    inputtable_excel_output_dir: str = ""
     notes: str = ""
 
     def resolved_name(self, token_yymmdd: str) -> str:
