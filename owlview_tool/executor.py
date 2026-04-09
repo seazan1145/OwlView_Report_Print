@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +97,19 @@ class Runner:
         WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return document.readyState") == "complete")
         self._emit("log", {"text": f"{label}: readyState 完了"})
 
+    @staticmethod
+    def _normalize_url_path(url: str) -> str:
+        parts = urlsplit(url.strip())
+        path = parts.path or "/"
+        if path != "/" and path.endswith("/"):
+            path = path[:-1]
+        return f"{parts.scheme}://{parts.netloc}{path}"
+
+    def _wait_url_prefix(self, driver, timeout: int, expected_url: str, label: str) -> None:
+        expected = self._normalize_url_path(expected_url)
+        WebDriverWait(driver, timeout).until(lambda d: self._normalize_url_path(d.current_url).startswith(expected))
+        self._emit("log", {"text": f"{label}: URL確認OK ({driver.current_url})"})
+
     def _find_input(self, driver, timeout: int):
         locator = (By.XPATH, self.cfg.common.xpath_input_box)
         WebDriverWait(driver, timeout).until(EC.presence_of_element_located(locator))
@@ -168,6 +182,7 @@ class Runner:
         timeout = max(1, common.selenium_wait_sec)
         driver.get(common.owlview_report_url)
         self._wait_ready_state(driver, timeout, "reportページ遷移成功")
+        self._wait_url_prefix(driver, timeout, common.owlview_report_url, "reportページ遷移成功")
         self._emit("log", {"text": f"report遷移成功: {driver.current_url}"})
 
     def run_capture_flow(self, driver, part: PartConfig, preview_mode: bool = False) -> tuple[list[Path], Path | None]:
