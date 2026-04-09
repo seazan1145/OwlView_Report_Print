@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -9,7 +10,14 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from .config_store import ConfigStore
 from .executor import Runner
 from .models import AppConfig, PartConfig
-from .services import ExternalTools, ftp_test_connection, printer_list
+from .services import (
+    ExternalTools,
+    ftp_test_connection,
+    printer_list,
+    resolve_tool_path,
+    resolved_remote_path,
+    validate_ftp_path_template,
+)
 
 
 class OwlViewApp:
@@ -24,16 +32,21 @@ class OwlViewApp:
         self.status_var = tk.StringVar(value="Ready")
         self.progress_var = tk.DoubleVar(value=0)
         self.selected_ids: list[int] = []
+        self.tools = self._resolve_tools()
 
-        data = base_dir / "Data"
-        self.tools = ExternalTools(
-            chromedriver=data / "chromedriver.exe",
-            curl=data / "curl" / "curl.exe",
-            sumatra=data / "SumatraPDF" / "SumatraPDF.exe",
-        )
         self._build_ui()
         self._refresh_part_list()
         self._poll_queue()
+        self._startup_external_tool_check()
+
+    def _resolve_tools(self) -> ExternalTools:
+        data = self.base_dir / "Data"
+        common = self.cfg.common
+        return ExternalTools(
+            chromedriver=resolve_tool_path(common.chromedriver_path, data / "chromedriver.exe", "chromedriver.exe"),
+            curl=resolve_tool_path(common.curl_path, data / "curl" / "curl.exe", "curl.exe"),
+            sumatra=resolve_tool_path(common.sumatra_path, data / "SumatraPDF" / "SumatraPDF.exe", "SumatraPDF.exe"),
+        )
 
     def _build_ui(self) -> None:
         self.root.title("OwlView 自動出力ツール (新版)")
@@ -96,37 +109,51 @@ class OwlViewApp:
     def _build_common_area(self, parent: ttk.Frame) -> None:
         frm = ttk.LabelFrame(parent, text="共通設定", padding=6)
         frm.pack(fill=tk.BOTH, expand=True)
+        c = self.cfg.common
         self.vars = {
-            "home": tk.StringVar(value=self.cfg.common.owlview_home_url),
-            "report": tk.StringVar(value=self.cfg.common.owlview_report_url),
-            "xpath": tk.StringVar(value=self.cfg.common.xpath_input_box),
-            "wait": tk.IntVar(value=self.cfg.common.selenium_wait_sec),
-            "local_dir": tk.StringVar(value=self.cfg.common.default_local_copy_dir),
-            "ftp_host": tk.StringVar(value=self.cfg.common.ftp_host),
-            "ftp_port": tk.IntVar(value=self.cfg.common.ftp_port),
-            "ftp_user": tk.StringVar(value=self.cfg.common.ftp_username),
-            "ftp_pass": tk.StringVar(value=self.cfg.common.ftp_password),
-            "ftp_path": tk.StringVar(value=self.cfg.common.ftp_remote_path_template),
-            "printer": tk.StringVar(value=self.cfg.common.default_printer_name),
+            "home": tk.StringVar(value=c.owlview_home_url),
+            "report": tk.StringVar(value=c.owlview_report_url),
+            "xpath": tk.StringVar(value=c.xpath_input_box),
+            "wait": tk.IntVar(value=c.selenium_wait_sec),
+            "local_dir": tk.StringVar(value=c.default_local_copy_dir),
+            "ftp_encryption": tk.StringVar(value=c.ftp_encryption),
+            "ftp_host": tk.StringVar(value=c.ftp_host),
+            "ftp_port": tk.IntVar(value=c.ftp_port),
+            "ftp_user": tk.StringVar(value=c.ftp_username),
+            "ftp_pass": tk.StringVar(value=c.ftp_password),
+            "ftp_path": tk.StringVar(value=c.ftp_remote_path_template),
+            "printer": tk.StringVar(value=c.default_printer_name),
+            "chromedriver": tk.StringVar(value=c.chromedriver_path),
+            "curl": tk.StringVar(value=c.curl_path),
+            "sumatra": tk.StringVar(value=c.sumatra_path),
         }
-        for i, (lbl, key) in enumerate([
+        rows = [
             ("Home URL", "home"),
             ("Report URL", "report"),
             ("XPath", "xpath"),
             ("Wait秒", "wait"),
             ("Local Copy先", "local_dir"),
+            ("FTP 暗号", "ftp_encryption"),
             ("FTP Host", "ftp_host"),
             ("FTP Port", "ftp_port"),
             ("FTP User", "ftp_user"),
             ("FTP Pass", "ftp_pass"),
             ("FTP Path", "ftp_path"),
             ("Printer", "printer"),
-        ]):
+            ("ChromeDriver Path", "chromedriver"),
+            ("curl Path", "curl"),
+            ("SumatraPDF Path", "sumatra"),
+        ]
+        for i, (lbl, key) in enumerate(rows):
             ttk.Label(frm, text=lbl).grid(row=i, column=0, sticky="w")
-            ttk.Entry(frm, textvariable=self.vars[key], width=40).grid(row=i, column=1, sticky="ew", pady=2)
+            if key == "ftp_encryption":
+                cb = ttk.Combobox(frm, textvariable=self.vars[key], values=["Implicit TLS/SSL", "Explicit TLS/SSL", "None"], state="readonly")
+                cb.grid(row=i, column=1, sticky="ew", pady=2)
+            else:
+                ttk.Entry(frm, textvariable=self.vars[key], width=40, show="*" if key == "ftp_pass" else "").grid(row=i, column=1, sticky="ew", pady=2)
 
         buttons = ttk.Frame(frm)
-        buttons.grid(row=12, column=0, columnspan=2, sticky="ew", pady=6)
+        buttons.grid(row=16, column=0, columnspan=2, sticky="ew", pady=6)
         ttk.Button(buttons, text="保存", command=self.save_settings).pack(side=tk.LEFT, padx=2)
         ttk.Button(buttons, text="保存先参照", command=self.pick_local_dir).pack(side=tk.LEFT, padx=2)
         ttk.Button(buttons, text="FTP接続テスト", command=self.test_ftp).pack(side=tk.LEFT, padx=2)
@@ -179,44 +206,106 @@ class OwlViewApp:
     def _part_dialog(self, part: PartConfig | None = None) -> PartConfig | None:
         d = tk.Toplevel(self.root)
         d.title("パート編集")
-        vals = {
-            "part_name": tk.StringVar(value=part.part_name if part else ""),
-            "output_name": tk.StringVar(value=part.output_name if part else ""),
-            "output_dir": tk.StringVar(value=part.output_dir if part else ""),
-            "format": tk.StringVar(value=part.output_format if part else "pdf"),
-            "scale": tk.DoubleVar(value=part.scale if part else 100),
-            "orientation": tk.StringVar(value=part.orientation if part else "portrait"),
+        d.columnconfigure(1, weight=1)
+        p = part or PartConfig(
+            local_copy_enabled=True,
+            ftp_upload_enabled=self.cfg.common.ftp_default_enabled,
+            print_enabled=self.cfg.common.print_default_enabled,
+            copies=self.cfg.common.default_print_copies,
+            printer_name=self.cfg.common.default_printer_name,
+            margin_top=0.0,
+            margin_bottom=0.0,
+            margin_left=0.0,
+            margin_right=0.0,
+            paper_width=8.27,
+            paper_height=11.69,
+            jpg_quality=90,
+        )
+        vals: dict[str, tk.Variable] = {
+            "part_name": tk.StringVar(value=p.part_name),
+            "output_name": tk.StringVar(value=p.output_name),
+            "output_dir": tk.StringVar(value=p.output_dir),
+            "format": tk.StringVar(value=p.output_format),
+            "scale": tk.DoubleVar(value=p.scale),
+            "orientation": tk.StringVar(value=p.orientation),
+            "ftp_upload_enabled": tk.BooleanVar(value=p.ftp_upload_enabled),
+            "local_copy_enabled": tk.BooleanVar(value=p.local_copy_enabled),
+            "print_enabled": tk.BooleanVar(value=p.print_enabled),
+            "printer_name": tk.StringVar(value=p.printer_name),
+            "copies": tk.IntVar(value=p.copies),
+            "margin_top": tk.DoubleVar(value=p.margin_top),
+            "margin_bottom": tk.DoubleVar(value=p.margin_bottom),
+            "margin_left": tk.DoubleVar(value=p.margin_left),
+            "margin_right": tk.DoubleVar(value=p.margin_right),
+            "paper_width": tk.DoubleVar(value=p.paper_width),
+            "paper_height": tk.DoubleVar(value=p.paper_height),
+            "jpg_quality": tk.IntVar(value=p.jpg_quality),
         }
-        for i, (label, key) in enumerate([
+
+        row = 0
+        text_items = [
             ("パート名", "part_name"),
             ("保存名", "output_name"),
             ("保存先", "output_dir"),
             ("形式(pdf/jpg/both)", "format"),
             ("倍率", "scale"),
             ("向き", "orientation"),
-        ]):
-            ttk.Label(d, text=label).grid(row=i, column=0, sticky="w")
-            ttk.Entry(d, textvariable=vals[key], width=50).grid(row=i, column=1, sticky="ew", pady=2)
+            ("プリンタ名", "printer_name"),
+            ("部数", "copies"),
+            ("余白 上", "margin_top"),
+            ("余白 下", "margin_bottom"),
+            ("余白 左", "margin_left"),
+            ("余白 右", "margin_right"),
+            ("用紙幅", "paper_width"),
+            ("用紙高", "paper_height"),
+            ("JPG品質", "jpg_quality"),
+        ]
+        printers = printer_list()
+        for label, key in text_items:
+            ttk.Label(d, text=label).grid(row=row, column=0, sticky="w")
+            if key == "printer_name" and printers:
+                ttk.Combobox(d, textvariable=vals[key], values=printers).grid(row=row, column=1, sticky="ew", pady=2)
+            else:
+                ttk.Entry(d, textvariable=vals[key], width=50).grid(row=row, column=1, sticky="ew", pady=2)
+            row += 1
+
+        for label, key in [
+            ("FTPアップロードON", "ftp_upload_enabled"),
+            ("ローカルコピーON", "local_copy_enabled"),
+            ("印刷ON", "print_enabled"),
+        ]:
+            ttk.Checkbutton(d, text=label, variable=vals[key]).grid(row=row, column=1, sticky="w")
+            row += 1
+
         ok = {"value": False}
-        ttk.Button(d, text="保存", command=lambda: (ok.__setitem__("value", True), d.destroy())).grid(row=8, column=1, sticky="e")
+        ttk.Button(d, text="保存", command=lambda: (ok.__setitem__("value", True), d.destroy())).grid(row=row + 1, column=1, sticky="e")
         d.transient(self.root)
         d.grab_set()
         d.wait_window()
         if not ok["value"]:
             return None
+
         new = PartConfig(
             enabled=True,
+            selected=part.selected if part else False,
             part_name=vals["part_name"].get(),
             output_name=vals["output_name"].get(),
             output_dir=vals["output_dir"].get(),
             output_format=vals["format"].get(),
             scale=float(vals["scale"].get()),
             orientation=vals["orientation"].get(),
-            local_copy_enabled=True,
-            ftp_upload_enabled=True,
-            print_enabled=False,
-            copies=self.cfg.common.default_print_copies,
-            printer_name=self.cfg.common.default_printer_name,
+            ftp_upload_enabled=bool(vals["ftp_upload_enabled"].get()),
+            local_copy_enabled=bool(vals["local_copy_enabled"].get()),
+            print_enabled=bool(vals["print_enabled"].get()),
+            printer_name=vals["printer_name"].get(),
+            copies=int(vals["copies"].get()),
+            margin_top=float(vals["margin_top"].get()),
+            margin_bottom=float(vals["margin_bottom"].get()),
+            margin_left=float(vals["margin_left"].get()),
+            margin_right=float(vals["margin_right"].get()),
+            paper_width=float(vals["paper_width"].get()),
+            paper_height=float(vals["paper_height"].get()),
+            jpg_quality=int(vals["jpg_quality"].get()),
         )
         errs = new.validate()
         if errs:
@@ -289,12 +378,17 @@ class OwlViewApp:
         c.xpath_input_box = self.vars["xpath"].get()
         c.selenium_wait_sec = int(self.vars["wait"].get())
         c.default_local_copy_dir = self.vars["local_dir"].get()
+        c.ftp_encryption = self.vars["ftp_encryption"].get()
         c.ftp_host = self.vars["ftp_host"].get()
         c.ftp_port = int(self.vars["ftp_port"].get())
         c.ftp_username = self.vars["ftp_user"].get()
         c.ftp_password = self.vars["ftp_pass"].get()
         c.ftp_remote_path_template = self.vars["ftp_path"].get()
         c.default_printer_name = self.vars["printer"].get()
+        c.chromedriver_path = self.vars["chromedriver"].get()
+        c.curl_path = self.vars["curl"].get()
+        c.sumatra_path = self.vars["sumatra"].get()
+        self.tools = self._resolve_tools()
         self.store.save(self.cfg)
         self.status_var.set("設定を保存しました")
 
@@ -310,15 +404,87 @@ class OwlViewApp:
 
     def test_ftp(self) -> None:
         self.save_settings()
+        path_errors = validate_ftp_path_template(self.cfg.common.ftp_remote_path_template)
+        expanded = resolved_remote_path(self.cfg.common.ftp_remote_path_template)
+        if path_errors:
+            messagebox.showwarning("FTP Path", f"バリデーション警告:\n" + "\n".join(path_errors) + f"\n\n展開後: {expanded}")
         try:
-            ftp_test_connection(self.cfg.common)
-            messagebox.showinfo("FTP", "接続成功")
+            remote, result = ftp_test_connection(self.cfg.common, self.tools.curl)
+            msg = "\n".join(
+                [
+                    "接続成功",
+                    f"host={self.cfg.common.ftp_host}",
+                    f"port={self.cfg.common.ftp_port}",
+                    f"暗号方式={self.cfg.common.ftp_encryption}",
+                    f"ユーザー名={self.cfg.common.ftp_username}",
+                    f"リモートパス(展開後)={remote}",
+                    f"curl={result.command_summary}",
+                    f"stdout={result.stdout or '(empty)'}",
+                    f"stderr={result.stderr or '(empty)'}",
+                ]
+            )
+            self._log(msg)
+            messagebox.showinfo("FTP", msg)
         except Exception as exc:
-            messagebox.showerror("FTP", f"接続失敗: {exc}")
+            self._log(str(exc))
+            messagebox.showerror("FTP", f"接続失敗:\n{exc}")
 
     def reload_printers(self) -> None:
         ps = printer_list()
         messagebox.showinfo("Printer", "\n".join(ps) if ps else "プリンタが見つかりません")
+
+    def _startup_external_tool_check(self) -> None:
+        checks = [
+            (self.tools.chromedriver, "OwlView取得"),
+            (self.tools.curl, "FTP接続テスト / FTPアップロード"),
+            (self.tools.sumatra, "印刷"),
+        ]
+        missing = [f"{p} ({feature}に必要)" for p, feature in checks if not p.exists()]
+        if missing:
+            messagebox.showwarning("外部ツール警告", "起動時チェックで未検出:\n" + "\n".join(missing))
+            for m in missing:
+                self._log(f"外部ツール未検出: {m}")
+
+    def _validate_before_run(self, parts: list[PartConfig]) -> list[str]:
+        errs: list[str] = []
+        today = datetime.now().strftime("%y%m%d")
+
+        if not self.tools.chromedriver.exists():
+            errs.append(f"ChromeDriver が見つかりません: {self.tools.chromedriver}")
+        if not self.tools.curl.exists():
+            errs.append(f"curl が見つかりません: {self.tools.curl}")
+
+        ftp_needed = any(p.ftp_upload_enabled for p in parts)
+        if ftp_needed:
+            c = self.cfg.common
+            if not c.ftp_host or not c.ftp_username or not c.ftp_password:
+                errs.append("FTP設定(ホスト/ユーザー/パスワード)が不足しています")
+            errs.extend(validate_ftp_path_template(c.ftp_remote_path_template))
+
+        print_needed = any(p.print_enabled for p in parts)
+        printers = printer_list() if print_needed else []
+        if print_needed and not self.tools.sumatra.exists():
+            errs.append(f"SumatraPDF が見つかりません: {self.tools.sumatra}")
+
+        names: set[str] = set()
+        for p in parts:
+            if not p.output_name.strip():
+                errs.append(f"出力ファイル名が空です: {p.part_name}")
+            name = p.resolved_name(today)
+            if name in names:
+                errs.append(f"yymmdd 展開後に重複しています: {name}")
+            names.add(name)
+
+            out_dir = Path(p.output_dir)
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                errs.append(f"出力先を作成できません: {out_dir}: {exc}")
+
+            if p.print_enabled and p.printer_name and printers and p.printer_name not in printers:
+                errs.append(f"指定プリンタが存在しません: {p.part_name}: {p.printer_name}")
+
+        return errs
 
     def _start_run(self, parts: list[PartConfig]) -> None:
         if self.runner:
@@ -329,7 +495,7 @@ class OwlViewApp:
         for p in parts:
             if not p.enabled:
                 continue
-            name = p.resolved_name("260408")
+            name = p.resolved_name(datetime.now().strftime("%y%m%d"))
             if name in seen:
                 self._log(f"重複ファイル名警告: {name}")
             seen.add(name)
@@ -337,6 +503,14 @@ class OwlViewApp:
         if not valid:
             messagebox.showwarning("対象なし", "実行対象がありません")
             return
+
+        errors = self._validate_before_run(valid)
+        if errors:
+            messagebox.showerror("実行前バリデーション", "\n".join(errors))
+            for e in errors:
+                self._log(f"実行前エラー: {e}")
+            return
+
         self.runner = Runner(self.cfg, self.tools, self.queue)
         self.runner.run_async(valid)
 
@@ -402,18 +576,28 @@ class OwlViewApp:
     def _show_result_dialog(self, results) -> None:
         dlg = tk.Toplevel(self.root)
         dlg.title("実行結果")
-        txt = tk.Text(dlg, width=80, height=16)
+        txt = tk.Text(dlg, width=110, height=22)
         txt.pack(fill=tk.BOTH, expand=True)
         failed = []
         for r in results:
-            line = f"{'OK' if r.success else 'NG'} | {r.part_name} | {r.message}\n"
-            txt.insert(tk.END, line)
+            txt.insert(tk.END, f"{'OK' if r.success else 'NG'} | {r.part_name} | {r.message}\n")
+            for status in r.file_statuses:
+                txt.insert(
+                    tk.END,
+                    f"  - {status.file_path.name}: 保存済み / ローカル={status.local_copy} / FTP={status.ftp} / 印刷={status.print_status}\n",
+                )
+            if not r.file_statuses:
+                txt.insert(tk.END, "  - 出力ファイルなし\n")
             if not r.success:
+                txt.insert(tk.END, f"  - 例外詳細: {r.message}\n")
                 failed.append(r.part_name)
+            txt.insert(tk.END, "\n")
+
         def rerun_failed():
             targets = [p for p in self.cfg.parts if p.part_name in failed]
             dlg.destroy()
             self._start_run(targets)
+
         ttk.Button(dlg, text="失敗分のみ再実行", command=rerun_failed).pack(side=tk.LEFT)
         ttk.Button(dlg, text="閉じる", command=dlg.destroy).pack(side=tk.RIGHT)
 
