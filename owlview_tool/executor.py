@@ -338,8 +338,33 @@ class Runner:
                     continue
             return False
 
-        WebDriverWait(driver, timeout).until(_has_marker)
-        self._emit("log", {"text": "report到達判定要素: 確認OK"})
+        try:
+            WebDriverWait(driver, timeout).until(_has_marker)
+            self._emit("log", {"text": "report到達判定要素: 確認OK"})
+            return
+        except TimeoutException:
+            # custom XPath が設定されている場合は、明示指定された判定を優先して失敗扱いにする。
+            if custom_xpath:
+                raise
+
+        # 既定セレクタで判定できないページ向けのフォールバック。
+        # URL/readyState は事前に確認済みのため、body が描画済みなら続行する。
+        def _fallback_ready(d) -> bool:
+            try:
+                body = d.find_element(By.TAG_NAME, "body")
+                text = (body.text or "").strip()
+                return body.is_displayed() and len(text) > 0
+            except Exception:
+                return False
+
+        try:
+            WebDriverWait(driver, min(timeout, 3)).until(_fallback_ready)
+            self._emit(
+                "log",
+                {"text": "report到達判定要素: 既定セレクタ未検出のためbody描画を確認して続行"},
+            )
+        except TimeoutException:
+            raise TimeoutException("report到達判定要素を検出できず、body描画確認も失敗しました")
 
     def _navigate_to_report(self, driver) -> None:
         common = self.cfg.common
