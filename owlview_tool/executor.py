@@ -13,6 +13,7 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -95,9 +96,24 @@ class Runner:
                 WebDriverWait(driver, timeout).until(EC.visibility_of_element_located((By.XPATH, common.xpath_input_box)))
                 WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, common.xpath_input_box)))
                 box = driver.find_element(By.XPATH, common.xpath_input_box)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", box)
+                box.click()
                 box.clear()
                 box = driver.find_element(By.XPATH, common.xpath_input_box)
                 box.send_keys(part_name)
+                input_value = (box.get_attribute("value") or "").strip()
+                if input_value != part_name:
+                    driver.execute_script(
+                        "arguments[0].value = arguments[1];"
+                        "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));"
+                        "arguments[0].dispatchEvent(new Event('change', {bubbles: true}));",
+                        box,
+                        part_name,
+                    )
+                    input_value = (box.get_attribute("value") or "").strip()
+                box.send_keys(Keys.ENTER)
+                if input_value != part_name:
+                    raise RuntimeError(f"入力検証NG: value='{input_value}'")
                 self._emit("log", {"text": "入力欄取得成功"})
                 self._emit("log", {"text": f"パート名入力成功: {part_name}"})
                 return
@@ -105,20 +121,47 @@ class Runner:
                 last_exc = exc
                 self._emit("log", {"text": f"stale element 発生のため再試行 ({attempt}/3)"})
                 time.sleep(0.2)
-            except TimeoutException as exc:
+            except (TimeoutException, RuntimeError) as exc:
                 last_exc = exc
+                self._emit("log", {"text": f"入力失敗 ({attempt}/3): {exc}"})
+                time.sleep(0.2)
+                if attempt < 3:
+                    continue
                 break
         raise RuntimeError(f"入力欄操作に失敗しました: {last_exc}")
+
+    def _navigate_to_report(self, driver) -> None:
+        common = self.cfg.common
+        timeout = max(1, common.selenium_wait_sec)
+        targets = {common.owlview_report_url.rstrip("/")}
+        if common.owlview_report_url.endswith("/report"):
+            targets.add(common.owlview_report_url[:-6].rstrip("/"))
+
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                driver.get(common.owlview_report_url)
+                self._wait_ready_state(driver, timeout, "reportページ遷移後")
+                current = driver.current_url.rstrip("/")
+                if current not in targets:
+                    raise RuntimeError(f"URL検証NG: current={driver.current_url}")
+                self._emit("log", {"text": f"report遷移成功: {driver.current_url}"})
+                return
+            except Exception as exc:
+                last_exc = exc
+                self._emit("log", {"text": f"report遷移失敗 ({attempt}/3): {exc}"})
+                if attempt < 3:
+                    time.sleep(0.5)
+                    continue
+        raise RuntimeError(f"reportページ遷移に失敗しました: {last_exc}")
 
     def run_capture_flow(self, driver, part: PartConfig, preview_mode: bool = False) -> tuple[list[Path], Path | None]:
         common = self.cfg.common
         self._emit("log", {"text": "プレビュー開始" if preview_mode else f"開始: {part.part_name}"})
         driver.get(common.owlview_home_url)
-        self._emit("log", {"text": "home遷移成功"})
+        self._emit("log", {"text": f"home遷移成功: {driver.current_url}"})
         self._input_part_name(driver, part.part_name)
-        driver.get(common.owlview_report_url)
-        self._wait_ready_state(driver, max(1, common.selenium_wait_sec), "reportページ遷移後")
-        self._emit("log", {"text": "report遷移成功"})
+        self._navigate_to_report(driver)
 
         stamp = datetime.now().strftime("%y%m%d")
         base = part.resolved_name(stamp)
