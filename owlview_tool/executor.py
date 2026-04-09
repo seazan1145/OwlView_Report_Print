@@ -19,7 +19,7 @@ from .services import (
     local_copy,
     print_with_sumatra,
     printer_list,
-    save_jpg_from_screenshot,
+    save_jpg_from_pdf,
     save_pdf,
 )
 
@@ -105,16 +105,26 @@ class Runner:
             out_dir = Path(part.output_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            if part.output_format in {"pdf", "both"}:
-                pdf_path = out_dir / f"{base}.pdf"
+            pdf_path = out_dir / f"{base}.pdf"
+            pdf_generated = False
+            if part.output_format in {"pdf", "both", "jpg"}:
                 save_pdf(driver, pdf_path, part)
+                pdf_generated = True
+                self._emit("log", {"text": f"PDF生成成功: {pdf_path}"})
+            if part.output_format in {"pdf", "both"} and pdf_generated:
                 outputs.append(pdf_path)
                 self._emit("log", {"text": f"PDF保存成功: {pdf_path}"})
             if part.output_format in {"jpg", "both"}:
                 jpg_path = out_dir / f"{base}.jpg"
-                save_jpg_from_screenshot(driver, jpg_path, part.jpg_quality)
+                if not pdf_generated:
+                    save_pdf(driver, pdf_path, part)
+                    pdf_generated = True
+                save_jpg_from_pdf(driver, pdf_path, jpg_path, part.jpg_quality)
                 outputs.append(jpg_path)
                 self._emit("log", {"text": f"JPG保存成功: {jpg_path}"})
+                if part.output_format == "jpg" and pdf_generated and pdf_path.exists():
+                    pdf_path.unlink(missing_ok=True)
+                    self._emit("log", {"text": f"JPG変換用の一時PDFを削除: {pdf_path}"})
 
             self._emit(
                 "log",
