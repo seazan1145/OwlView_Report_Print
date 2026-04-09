@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
@@ -13,7 +13,23 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 
 from .models import AppConfig, PartConfig
-from .services import ExternalTools, ftp_upload, local_copy, print_with_sumatra, save_jpg_from_screenshot, save_pdf
+from .services import (
+    ExternalTools,
+    ftp_upload,
+    local_copy,
+    print_with_sumatra,
+    printer_list,
+    save_jpg_from_screenshot,
+    save_pdf,
+)
+
+
+@dataclass
+class FileActionStatus:
+    file_path: Path
+    local_copy: str = "-"
+    ftp: str = "-"
+    print_status: str = "-"
 
 
 @dataclass
@@ -22,6 +38,8 @@ class JobResult:
     success: bool
     message: str
     outputs: list[Path]
+    details: list[str] = field(default_factory=list)
+    file_statuses: list[FileActionStatus] = field(default_factory=list)
 
 
 class Runner:
@@ -62,17 +80,25 @@ class Runner:
     def _run_part(self, driver, idx: int, total: int, part: PartConfig) -> JobResult:
         common = self.cfg.common
         outputs: list[Path] = []
+        details: list[str] = []
+        file_statuses: list[FileActionStatus] = []
         tag = f"[{idx}/{total}] {part.part_name}"
         try:
             self._emit("progress", {"value": idx - 1, "total": total, "text": f"開始 {tag}"})
+            self._emit("log", {"text": f"開始: {tag}"})
+            self._emit("log", {"text": f"使用URL(home): {common.owlview_home_url}"})
             driver.get(common.owlview_home_url)
             time.sleep(common.selenium_wait_sec)
             box = driver.find_element(By.XPATH, common.xpath_input_box)
             box.clear()
             box.send_keys(part.part_name)
+            self._emit("log", {"text": f"XPath入力成功: {part.part_name}"})
             time.sleep(common.selenium_wait_sec)
+
+            self._emit("log", {"text": f"使用URL(report): {common.owlview_report_url}"})
             driver.get(common.owlview_report_url)
             time.sleep(common.selenium_wait_sec)
+            self._emit("log", {"text": "reportページ遷移成功"})
 
             stamp = datetime.now().strftime("%y%m%d")
             base = part.resolved_name(stamp)
@@ -83,23 +109,77 @@ class Runner:
                 pdf_path = out_dir / f"{base}.pdf"
                 save_pdf(driver, pdf_path, part)
                 outputs.append(pdf_path)
+                self._emit("log", {"text": f"PDF保存成功: {pdf_path}"})
             if part.output_format in {"jpg", "both"}:
                 jpg_path = out_dir / f"{base}.jpg"
                 save_jpg_from_screenshot(driver, jpg_path, part.jpg_quality)
                 outputs.append(jpg_path)
+                self._emit("log", {"text": f"JPG保存成功: {jpg_path}"})
+
+            self._emit(
+                "log",
+                {
+                    "text": (
+                        f"印刷設定: print_enabled={part.print_enabled}, printer={part.printer_name or '(未設定)'}, "
+                        f"copies={part.copies}, sumatra={self.tools.sumatra}"
+                    )
+                },
+            )
+
+            printers = printer_list()
 
             for p in outputs:
+                status = FileActionStatus(file_path=p)
+
                 if part.local_copy_enabled:
                     local_copy(p, common)
-                if part.ftp_upload_enabled:
-                    ftp_upload(p, common)
-                if part.print_enabled and p.suffix.lower() == ".pdf" and part.printer_name:
-                    print_with_sumatra(self.tools.sumatra, p, part.printer_name, max(1, part.copies))
+                    status.local_copy = "成功"
+                    self._emit("log", {"text": f"ローカルコピー成功: {p.name}"})
+                else:
+                    status.local_copy = "スキップ(OFF)"
+                    self._emit("log", {"text": f"ローカルコピー: OFFのためスキップ ({p.name})"})
 
+                if part.ftp_upload_enabled:
+                    self._emit("log", {"text": f"FTP開始: {p.name}"})
+                    target, curl_result = ftp_upload(p, common, self.tools.curl)
+                    status.ftp = f"成功 ({target})"
+                    self._emit("log", {"text": f"FTP成功: {p.name} -> {target}"})
+                    self._emit("log", {"text": f"FTP command: {curl_result.command_summary}"})
+                    if curl_result.stdout:
+                        self._emit("log", {"text": f"FTP stdout: {curl_result.stdout}"})
+                    if curl_result.stderr:
+                        self._emit("log", {"text": f"FTP stderr: {curl_result.stderr}"})
+                else:
+                    status.ftp = "スキップ(OFF)"
+                    self._emit("log", {"text": f"FTP: OFFのためスキップ ({p.name})"})
+
+                if p.suffix.lower() != ".pdf":
+                    status.print_status = "スキップ(PDFのみ)"
+                    self._emit("log", {"text": f"印刷スキップ: PDF以外 ({p.name})"})
+                elif not part.print_enabled:
+                    status.print_status = "スキップ(print_enabled=False)"
+                    self._emit("log", {"text": f"印刷OFFのためスキップ: {p.name}"})
+                elif not part.printer_name:
+                    status.print_status = "スキップ(プリンタ未設定)"
+                    self._emit("log", {"text": f"印刷スキップ: printer_name 未設定 ({p.name})"})
+                elif not self.tools.sumatra.exists():
+                    status.print_status = "スキップ(Sumatra未検出)"
+                    self._emit("log", {"text": f"印刷スキップ: SumatraPDFが見つかりません ({self.tools.sumatra})"})
+                elif printers and part.printer_name not in printers:
+                    status.print_status = "失敗(プリンタ未存在)"
+                    raise RuntimeError(f"指定プリンタが存在しません: {part.printer_name}")
+                else:
+                    self._emit("log", {"text": f"印刷開始: {p.name}"})
+                    print_with_sumatra(self.tools.sumatra, p, part.printer_name, max(1, part.copies))
+                    status.print_status = "成功"
+                    self._emit("log", {"text": f"印刷成功: {p.name}"})
+                file_statuses.append(status)
+
+            details.append("保存完了")
             self._emit("progress", {"value": idx, "total": total, "text": f"完了 {tag}"})
             self._emit("log", {"text": f"完了: {part.part_name}"})
-            return JobResult(part.part_name, True, "ok", outputs)
+            return JobResult(part.part_name, True, "ok", outputs, details=details, file_statuses=file_statuses)
         except Exception as exc:
             self._emit("log", {"text": f"失敗: {part.part_name}: {exc}"})
             self._emit("progress", {"value": idx, "total": total, "text": f"失敗 {tag}"})
-            return JobResult(part.part_name, False, str(exc), outputs)
+            return JobResult(part.part_name, False, str(exc), outputs, details=details, file_statuses=file_statuses)

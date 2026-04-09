@@ -45,6 +45,10 @@ class PartConfig:
             errors.append("scale は 0 より大きい値にしてください")
         if self.jpg_quality < 1 or self.jpg_quality > 100:
             errors.append("jpg_quality は 1〜100 にしてください")
+        if self.copies < 1:
+            errors.append("copies は 1 以上にしてください")
+        if self.paper_width <= 0 or self.paper_height <= 0:
+            errors.append("用紙サイズは正の値を指定してください")
         return errors
 
 
@@ -71,6 +75,9 @@ class CommonConfig:
     preview_auto_refresh: bool = False
     last_selected_part_index: int = 0
     window_geometry: str = "1400x900+80+40"
+    chromedriver_path: str = ""
+    curl_path: str = ""
+    sumatra_path: str = ""
 
 
 @dataclass
