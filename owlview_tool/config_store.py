@@ -17,7 +17,12 @@ class ConfigStore:
         self.settings_file.parent.mkdir(parents=True, exist_ok=True)
         if self.settings_file.exists():
             try:
-                return AppConfig.from_dict(json.loads(self.settings_file.read_text(encoding="utf-8")))
+                raw = json.loads(self.settings_file.read_text(encoding="utf-8"))
+                loaded_version = int(raw.get("version", 1)) if isinstance(raw, dict) else 1
+                cfg = AppConfig.from_dict(raw if isinstance(raw, dict) else {})
+                if loaded_version < 4:
+                    self.save(cfg)
+                return cfg
             except Exception:
                 broken = self.settings_file.with_suffix(".broken.json")
                 self.settings_file.replace(broken)

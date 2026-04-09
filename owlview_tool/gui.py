@@ -47,7 +47,7 @@ def safe_geometry(raw: str, screen_w: int, screen_h: int, default_size: tuple[in
     except Exception:
         pass
 
-    min_w, min_h = 980, 620
+    min_w, min_h = 900, 580
     max_w = max(min_w, int(screen_w * 0.98))
     max_h = max(min_h, int(screen_h * 0.95))
     width = max(min_w, min(width, max_w))
@@ -62,7 +62,7 @@ class PdfPreviewWindow:
         self.app = app
         self.win = tk.Toplevel(app.root)
         self.win.title("印刷プレビュー")
-        self.win.geometry("1040x700")
+        self.win.geometry("980x660")
         self.current_part_index = -1
         self.preview_part: PartConfig | None = None
         self.pdf_path: Path | None = None
@@ -72,11 +72,11 @@ class PdfPreviewWindow:
         self.photo: ImageTk.PhotoImage | None = None
 
         left = ttk.LabelFrame(self.win, text="設定")
-        left.pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=4)
-        left.configure(width=230)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=3, pady=3)
+        left.configure(width=190)
         left.pack_propagate(False)
         right = ttk.Frame(self.win)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=3, pady=3)
 
         self.vars = {
             "scale": tk.DoubleVar(value=100.0),
@@ -97,16 +97,16 @@ class PdfPreviewWindow:
         ]
         r = 0
         for label, key in rows:
-            ttk.Label(left, text=label).grid(row=r, column=0, sticky="w", padx=3, pady=2)
-            ttk.Entry(left, textvariable=self.vars[key], width=12).grid(row=r, column=1, sticky="ew", padx=3, pady=1)
+            ttk.Label(left, text=label).grid(row=r, column=0, sticky="w", padx=2, pady=1)
+            ttk.Entry(left, textvariable=self.vars[key], width=10).grid(row=r, column=1, sticky="ew", padx=2, pady=1)
             r += 1
-        ttk.Label(left, text="向き").grid(row=r, column=0, sticky="w", padx=3, pady=2)
-        ttk.Combobox(left, textvariable=self.vars["orientation"], values=["縦", "横"], state="readonly", width=9).grid(row=r, column=1, sticky="ew", padx=3, pady=1)
+        ttk.Label(left, text="向き").grid(row=r, column=0, sticky="w", padx=2, pady=1)
+        ttk.Combobox(left, textvariable=self.vars["orientation"], values=["縦", "横"], state="readonly", width=8).grid(row=r, column=1, sticky="ew", padx=2, pady=1)
         r += 1
 
-        ttk.Button(left, text="再読込", command=self.reload_pdf).grid(row=r, column=0, columnspan=2, sticky="ew", padx=3, pady=(8, 2))
+        ttk.Button(left, text="再読込", command=self.reload_pdf).grid(row=r, column=0, columnspan=2, sticky="ew", padx=2, pady=(6, 2))
         r += 1
-        ttk.Button(left, text="設定を保存", command=self.save_to_part).grid(row=r, column=0, columnspan=2, sticky="ew", padx=3, pady=2)
+        ttk.Button(left, text="設定を保存", command=self.save_to_part).grid(row=r, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
 
         bar = ttk.Frame(right)
         bar.pack(fill=tk.X)
@@ -225,6 +225,7 @@ class OwlViewApp:
         self._refresh_printer_combo()
         self._refresh_part_list()
         self._log_missing_tools()
+        self._show_missing_tool_dialog()
         self._poll_queue()
 
     def _resolve_tools(self) -> ExternalTools:
@@ -240,6 +241,20 @@ class OwlViewApp:
         for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
             if not path.exists():
                 self._log(f"{name} が見つかりません。設定の明示パスまたはPATHを確認してください: {path}")
+
+    def _show_missing_tool_dialog(self) -> None:
+        missing: list[str] = []
+        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+            if not path.exists():
+                missing.append(f"- {name}: {path}")
+        if not missing:
+            return
+        messagebox.showwarning(
+            "外部ツール未検出",
+            "以下の実行ファイルが見つかりません。\n"
+            "Data同梱なし構成では、詳細設定の明示パスまたはPATHに配置してください。\n\n"
+            + "\n".join(missing),
+        )
 
     def _build_ui(self) -> None:
         self.root.title("OwlView 自動出力ツール")
@@ -385,7 +400,7 @@ class OwlViewApp:
     def _part_dialog(self, part: PartConfig | None = None) -> PartConfig | None:
         d = tk.Toplevel(self.root)
         d.title("パート編集")
-        d.geometry("640x620")
+        d.geometry("600x560")
         d.columnconfigure(1, weight=1)
         p = part or PartConfig()
         vars = {
@@ -463,7 +478,7 @@ class OwlViewApp:
     # unchanged settings mostly
     def open_detail_settings(self) -> None:
         c = self.cfg.common
-        d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("760x620")
+        d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
         vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings)}
 
         outer = ttk.Frame(d, padding=6)
@@ -645,6 +660,9 @@ class OwlViewApp:
         self.preview_window.load_for_part(idx, self.cfg.parts[idx])
 
     def test_ftp(self) -> None:
+        if not self.tools.curl.exists():
+            messagebox.showerror("FTP", f"curl が見つかりません: {self.tools.curl}")
+            return
         path_errors = validate_ftp_path_template(self.cfg.common.ftp_remote_path_template)
         expanded = resolved_remote_path(self.cfg.common.ftp_remote_path_template)
         if path_errors: messagebox.showwarning("FTP Path", "バリデーション警告:\n" + "\n".join(path_errors) + f"\n\n展開後: {expanded}")

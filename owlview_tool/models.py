@@ -82,14 +82,18 @@ class CommonConfig:
 class AppConfig:
     parts: list[PartConfig] = field(default_factory=list)
     common: CommonConfig = field(default_factory=CommonConfig)
-    version: int = 3
+    version: int = 4
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":
-        common = CommonConfig(**data.get("common", {}))
+        common_fields = set(CommonConfig.__dataclass_fields__.keys())
+        raw_common = data.get("common", {})
+        if not isinstance(raw_common, dict):
+            raw_common = {}
+        common = CommonConfig(**{k: v for k, v in raw_common.items() if k in common_fields})
         part_fields = set(PartConfig.__dataclass_fields__.keys())
         cleaned_parts: list[PartConfig] = []
         for raw in data.get("parts", []):
@@ -104,7 +108,11 @@ class AppConfig:
             if p.orientation not in {"portrait", "landscape"}:
                 p.orientation = "portrait"
             p.local_copy_enabled = bool(p.local_copy_enabled)
-        return cls(parts=parts, common=common, version=int(data.get("version", 1)))
+        loaded_version = int(data.get("version", 1))
+        if loaded_version < 4:
+            # v4: 実行時トグルへ統合した旧キー(存在しても未使用)を段階的に吸収済み。
+            pass
+        return cls(parts=parts, common=common, version=4)
 
 
 def default_seed_config() -> AppConfig:
