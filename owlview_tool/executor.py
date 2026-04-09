@@ -139,7 +139,14 @@ class Runner:
     def _is_expected_url(cls, current_url: str, expected_url: str) -> bool:
         current = urlsplit(current_url.strip())
         expected = urlsplit(expected_url.strip())
-        if current.scheme != expected.scheme or current.netloc != expected.netloc:
+        current_host = (current.hostname or "").lower()
+        expected_host = (expected.hostname or "").lower()
+        if not current_host or not expected_host or current_host != expected_host:
+            return False
+
+        # report URL 設定側にポート指定がある場合のみ、ポートを厳密比較する。
+        # (http->https リダイレクトや既定ポートの省略差異を吸収するため)
+        if expected.port is not None and current.port != expected.port:
             return False
 
         expected_path = cls._normalize_path(expected.path)
