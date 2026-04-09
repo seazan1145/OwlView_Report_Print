@@ -358,6 +358,16 @@ class OwlViewApp:
         self.log_text.pack(fill=tk.BOTH, expand=True)
         ttk.Label(parent, textvariable=self.status_var).pack(anchor="w")
 
+    def _render_part_summary_line(self, summary) -> str:
+        started = summary.started_at.strftime("%H:%M:%S")
+        elapsed = f"{summary.elapsed_sec:.1f}s"
+        error = f" / エラー: {summary.error_summary}" if summary.error_summary else ""
+        return (
+            f"[PART] {summary.part_name} 開始:{started} "
+            f"PDF:{summary.pdf} JPG:{summary.jpg} FTP:{summary.ftp} 印刷:{summary.printing} "
+            f"出力先:{summary.output_dir} 所要:{elapsed}{error}"
+        )
+
     def _refresh_printer_combo(self) -> None:
         ps = printer_list()
         self.printer_combo["values"] = ps
@@ -479,7 +489,8 @@ class OwlViewApp:
     def open_detail_settings(self) -> None:
         c = self.cfg.common
         d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings)}
+        dbg = c.debug
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
 
         outer = ttk.Frame(d, padding=6)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -530,8 +541,25 @@ class OwlViewApp:
         ttk.Label(sec_print, text="自動保存").grid(row=3, column=0, sticky="w", padx=4, pady=2)
         ttk.Checkbutton(sec_print, variable=vars["auto_save"]).grid(row=3, column=1, sticky="w")
 
+        sec_debug = ttk.LabelFrame(body, text="Debug", padding=6); sec_debug.pack(fill=tk.X, pady=(6, 0)); sec_debug.columnconfigure(1, weight=1)
+        ttk.Label(sec_debug, text="Debug有効").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_enabled"]).grid(row=0, column=1, sticky="w")
+        ttk.Label(sec_debug, text="Headless").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_headless"]).grid(row=1, column=1, sticky="w")
+        ttk.Label(sec_debug, text="詳細ログ").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_verbose"]).grid(row=2, column=1, sticky="w")
+        ttk.Label(sec_debug, text="エラー時スクショ").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_shot"]).grid(row=3, column=1, sticky="w")
+        ttk.Label(sec_debug, text="エラー時HTML").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_html"]).grid(row=4, column=1, sticky="w")
+        _add_entry(sec_debug, 5, "待機秒数(override)", "dbg_wait")
+        _add_entry(sec_debug, 6, "入力反映待機秒", "dbg_settle")
+        ttk.Label(sec_debug, text="Report直遷移").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_report_direct"]).grid(row=7, column=1, sticky="w")
+
         def _save_detail() -> None:
             c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_default_enabled = bool(vars["ftp_default"].get()); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.print_default_enabled = bool(vars["print_default"].get()); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            c.debug.enabled = bool(vars["dbg_enabled"].get()); c.debug.headless = bool(vars["dbg_headless"].get()); c.debug.verbose_log = bool(vars["dbg_verbose"].get()); c.debug.save_screenshot_on_error = bool(vars["dbg_shot"].get()); c.debug.save_html_on_error = bool(vars["dbg_html"].get()); c.debug.selenium_wait_timeout = int(vars["dbg_wait"].get()); c.debug.input_settle_wait = float(vars["dbg_settle"].get()); c.debug.report_direct_navigation = bool(vars["dbg_report_direct"].get())
             self.store.save(self.cfg); self.tools = self._resolve_tools(); self.main_printer_var.set(c.default_printer_name); self._refresh_printer_combo(); self._log("詳細設定を保存しました"); d.destroy()
         btns = ttk.Frame(d); btns.pack(fill=tk.X, padx=8, pady=8)
         ttk.Button(btns, text="FTP接続テスト", command=self.test_ftp).pack(side=tk.LEFT, padx=2)
@@ -641,7 +669,7 @@ class OwlViewApp:
             self._log(f"プレビューキャッシュ使用: {cached.name}")
             return cached
         runner = Runner(self.cfg, self.tools, self.queue)
-        pdf, _ = runner.run_preview_capture(part, preview_dir)
+        pdf, _ = runner.run_preview(part, preview_dir)
         self.preview_temp_files.append(pdf)
         self.preview_cache[cache_key] = pdf
         for old in self.preview_temp_files[:-3]:
@@ -691,6 +719,7 @@ class OwlViewApp:
                 if kind == "start": self.progress_var.set(0); self.status_var.set("実行開始")
                 elif kind == "progress": self.progress_var.set(payload["value"] / max(payload["total"], 1) * 100); self.status_var.set(payload["text"])
                 elif kind == "log": self._log(payload["text"])
+                elif kind == "part_summary": self._log(self._render_part_summary_line(payload["summary"]))
                 elif kind == "done": self._show_result_dialog(payload["results"]); self.runner = None
         except Empty:
             pass
@@ -699,11 +728,27 @@ class OwlViewApp:
     def _show_result_dialog(self, results) -> None:
         dlg = tk.Toplevel(self.root); dlg.title("実行結果")
         txt = tk.Text(dlg, width=110, height=22); txt.pack(fill=tk.BOTH, expand=True)
+        failed: list[str] = []
         for r in results:
             txt.insert(tk.END, f"{'OK' if r.success else 'NG'} | {r.part_name} | {r.message}\n")
             for status in r.file_statuses:
                 txt.insert(tk.END, f"  - {status.file_path.name}: ローカル={status.local_copy} / FTP={status.ftp} / 印刷={status.print_status}\n")
             txt.insert(tk.END, "\n")
+            if not r.success:
+                failed.append(r.part_name)
+        txt.insert(
+            tk.END,
+            "\n".join(
+                [
+                    "=== 全体サマリ ===",
+                    f"総件数: {len(results)}",
+                    f"成功件数: {len([r for r in results if r.success])}",
+                    f"失敗件数: {len(failed)}",
+                    f"失敗パート一覧: {', '.join(failed) if failed else '-'}",
+                    f"保存先フォルダ: {self.base_dir}",
+                ]
+            ) + "\n",
+        )
         ttk.Button(dlg, text="閉じる", command=dlg.destroy).pack(side=tk.RIGHT)
 
     def _append_stacktrace(self, exc: Exception) -> None:

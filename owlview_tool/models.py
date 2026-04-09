@@ -48,6 +48,18 @@ class PartConfig:
 
 
 @dataclass
+class DebugConfig:
+    enabled: bool = False
+    headless: bool = True
+    verbose_log: bool = False
+    save_screenshot_on_error: bool = True
+    save_html_on_error: bool = True
+    selenium_wait_timeout: int = 5
+    input_settle_wait: float = 1.0
+    report_direct_navigation: bool = True
+
+
+@dataclass
 class CommonConfig:
     owlview_home_url: str = "https://owlview.sunrise-office.net"
     owlview_report_url: str = "https://owlview.sunrise-office.net/report"
@@ -76,13 +88,14 @@ class CommonConfig:
     chromedriver_path: str = ""
     curl_path: str = ""
     sumatra_path: str = ""
+    debug: DebugConfig = field(default_factory=DebugConfig)
 
 
 @dataclass
 class AppConfig:
     parts: list[PartConfig] = field(default_factory=list)
     common: CommonConfig = field(default_factory=CommonConfig)
-    version: int = 4
+    version: int = 5
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -93,7 +106,30 @@ class AppConfig:
         raw_common = data.get("common", {})
         if not isinstance(raw_common, dict):
             raw_common = {}
-        common = CommonConfig(**{k: v for k, v in raw_common.items() if k in common_fields})
+        debug_fields = set(DebugConfig.__dataclass_fields__.keys())
+        raw_debug = raw_common.get("debug", {})
+        if not isinstance(raw_debug, dict):
+            raw_debug = {}
+        # 旧設定からの吸収: common直下に残っているdebug系キーを受け取る
+        legacy_debug = {
+            "headless": raw_common.get("headless"),
+            "verbose_log": raw_common.get("verbose_log"),
+            "save_screenshot_on_error": raw_common.get("save_screenshot_on_error"),
+            "save_html_on_error": raw_common.get("save_html_on_error"),
+            "selenium_wait_timeout": raw_common.get("selenium_wait_timeout"),
+            "input_settle_wait": raw_common.get("input_settle_wait"),
+            "report_direct_navigation": raw_common.get("report_direct_navigation"),
+        }
+        for key, value in legacy_debug.items():
+            if key not in raw_debug and value is not None:
+                raw_debug[key] = value
+        if "enabled" not in raw_debug:
+            raw_debug["enabled"] = bool(raw_debug.get("verbose_log", False))
+        debug = DebugConfig(**{k: v for k, v in raw_debug.items() if k in debug_fields})
+
+        common_values = {k: v for k, v in raw_common.items() if k in common_fields and k != "debug"}
+        common = CommonConfig(**common_values)
+        common.debug = debug
         part_fields = set(PartConfig.__dataclass_fields__.keys())
         cleaned_parts: list[PartConfig] = []
         for raw in data.get("parts", []):
@@ -109,10 +145,10 @@ class AppConfig:
                 p.orientation = "portrait"
             p.local_copy_enabled = bool(p.local_copy_enabled)
         loaded_version = int(data.get("version", 1))
-        if loaded_version < 4:
+        if loaded_version < 5:
             # v4: 実行時トグルへ統合した旧キー(存在しても未使用)を段階的に吸収済み。
             pass
-        return cls(parts=parts, common=common, version=4)
+        return cls(parts=parts, common=common, version=5)
 
 
 def default_seed_config() -> AppConfig:

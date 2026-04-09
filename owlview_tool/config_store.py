@@ -20,7 +20,7 @@ class ConfigStore:
                 raw = json.loads(self.settings_file.read_text(encoding="utf-8"))
                 loaded_version = int(raw.get("version", 1)) if isinstance(raw, dict) else 1
                 cfg = AppConfig.from_dict(raw if isinstance(raw, dict) else {})
-                if loaded_version < 4:
+                if loaded_version < 5:
                     self.save(cfg)
                 return cfg
             except Exception:
