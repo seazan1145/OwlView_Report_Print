@@ -4,6 +4,7 @@ import base64
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -89,14 +90,80 @@ def save_jpg_from_screenshot(driver, dest: Path, quality: int = 90) -> None:
 
 
 def save_jpg_from_pdf(driver, pdf_path: Path, dest: Path, quality: int = 90) -> None:
-    driver.get(pdf_path.resolve().as_uri())
-    png = driver.get_screenshot_as_png()
-    tmp = dest.with_suffix(".tmp.png")
-    tmp.write_bytes(png)
-    with Image.open(tmp) as im:
-        rgb = im.convert("RGB")
-        rgb.save(dest, "JPEG", quality=quality)
-    tmp.unlink(missing_ok=True)
+    convert_pdf_first_page_to_jpg(pdf_path, dest, quality=quality)
+
+
+def _convert_pdf_with_pymupdf(pdf_path: Path, dest: Path, quality: int, dpi: int) -> bool:
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        return False
+    doc = fitz.open(pdf_path)
+    try:
+        if doc.page_count < 1:
+            raise RuntimeError(f"PDFページがありません: {pdf_path}")
+        page = doc.load_page(0)
+        scale = max(1.0, dpi / 72.0)
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        mode = "RGB" if pix.n < 4 else "RGBA"
+        img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+        img.convert("RGB").save(dest, "JPEG", quality=quality)
+        return True
+    finally:
+        doc.close()
+
+
+def _convert_pdf_with_pdf2image(pdf_path: Path, dest: Path, quality: int, dpi: int) -> bool:
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+    except ImportError:
+        return False
+    with tempfile.TemporaryDirectory() as td:
+        images = convert_from_path(
+            str(pdf_path),
+            dpi=dpi,
+            first_page=1,
+            last_page=1,
+            fmt="png",
+            output_folder=td,
+        )
+        if not images:
+            raise RuntimeError(f"PDFの画像化に失敗しました: {pdf_path}")
+        images[0].convert("RGB").save(dest, "JPEG", quality=quality)
+    return True
+
+
+def convert_pdf_first_page_to_jpg(pdf_path: Path, dest: Path, quality: int = 90, dpi: int = 200) -> None:
+    """
+    PDFの1ページ目をJPG化する。現仕様では1ページ目のみ対応。
+    """
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDFが見つかりません: {pdf_path}")
+    if _convert_pdf_with_pymupdf(pdf_path, dest, quality, dpi):
+        return
+    if _convert_pdf_with_pdf2image(pdf_path, dest, quality, dpi):
+        return
+    raise RuntimeError("PDF->JPG変換ライブラリがありません。PyMuPDF(fitz) もしくは pdf2image(+poppler) を導入してください。")
+
+
+def render_pdf_first_page_image(pdf_path: Path, dpi: int = 144) -> Image.Image:
+    try:
+        import fitz  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("PDFプレビューにはPyMuPDF(fitz)が必要です。") from exc
+    doc = fitz.open(pdf_path)
+    try:
+        if doc.page_count < 1:
+            raise RuntimeError(f"PDFページがありません: {pdf_path}")
+        page = doc.load_page(0)
+        scale = max(1.0, dpi / 72.0)
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        mode = "RGB" if pix.n < 4 else "RGBA"
+        return Image.frombytes(mode, [pix.width, pix.height], pix.samples).convert("RGB")
+    finally:
+        doc.close()
 
 
 def validate_ftp_path_template(path_template: str) -> list[str]:
