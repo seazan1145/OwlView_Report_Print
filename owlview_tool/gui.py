@@ -15,6 +15,7 @@ from .services import (
     ftp_test_connection,
     printer_list,
     resolve_tool_path,
+    save_pdf,
     resolved_remote_path,
     validate_ftp_path_template,
 )
@@ -41,11 +42,10 @@ class OwlViewApp:
 
     def _resolve_tools(self) -> ExternalTools:
         data = self.base_dir / "Data"
-        common = self.cfg.common
         return ExternalTools(
-            chromedriver=resolve_tool_path(common.chromedriver_path, data / "chromedriver.exe", "chromedriver.exe"),
-            curl=resolve_tool_path(common.curl_path, data / "curl" / "curl.exe", "curl.exe"),
-            sumatra=resolve_tool_path(common.sumatra_path, data / "SumatraPDF" / "SumatraPDF.exe", "SumatraPDF.exe"),
+            chromedriver=resolve_tool_path("", data / "chromedriver.exe", "chromedriver.exe"),
+            curl=resolve_tool_path("", data / "curl" / "curl.exe", "curl.exe"),
+            sumatra=resolve_tool_path("", data / "SumatraPDF" / "SumatraPDF.exe", "SumatraPDF.exe"),
         )
 
     def _build_ui(self) -> None:
@@ -123,41 +123,40 @@ class OwlViewApp:
             "ftp_pass": tk.StringVar(value=c.ftp_password),
             "ftp_path": tk.StringVar(value=c.ftp_remote_path_template),
             "printer": tk.StringVar(value=c.default_printer_name),
-            "chromedriver": tk.StringVar(value=c.chromedriver_path),
-            "curl": tk.StringVar(value=c.curl_path),
-            "sumatra": tk.StringVar(value=c.sumatra_path),
         }
-        rows = [
-            ("Home URL", "home"),
-            ("Report URL", "report"),
-            ("XPath", "xpath"),
-            ("Wait秒", "wait"),
-            ("Local Copy先", "local_dir"),
-            ("FTP 暗号", "ftp_encryption"),
-            ("FTP Host", "ftp_host"),
-            ("FTP Port", "ftp_port"),
-            ("FTP User", "ftp_user"),
-            ("FTP Pass", "ftp_pass"),
-            ("FTP Path", "ftp_path"),
-            ("Printer", "printer"),
-            ("ChromeDriver Path", "chromedriver"),
-            ("curl Path", "curl"),
-            ("SumatraPDF Path", "sumatra"),
-        ]
-        for i, (lbl, key) in enumerate(rows):
-            ttk.Label(frm, text=lbl).grid(row=i, column=0, sticky="w")
-            if key == "ftp_encryption":
-                cb = ttk.Combobox(frm, textvariable=self.vars[key], values=["Implicit TLS/SSL", "Explicit TLS/SSL", "None"], state="readonly")
-                cb.grid(row=i, column=1, sticky="ew", pady=2)
-            else:
-                ttk.Entry(frm, textvariable=self.vars[key], width=40, show="*" if key == "ftp_pass" else "").grid(row=i, column=1, sticky="ew", pady=2)
+        tabs = ttk.Notebook(frm)
+        tabs.pack(fill=tk.BOTH, expand=True)
+        basic = ttk.Frame(tabs, padding=4)
+        ftp = ttk.Frame(tabs, padding=4)
+        prn = ttk.Frame(tabs, padding=4)
+        tabs.add(basic, text="基本")
+        tabs.add(ftp, text="FTP")
+        tabs.add(prn, text="印刷")
+
+        basic_rows = [("Home URL", "home"), ("Report URL", "report"), ("XPath", "xpath"), ("Wait秒", "wait"), ("Local Copy先", "local_dir")]
+        ftp_rows = [("FTP 暗号", "ftp_encryption"), ("FTP Host", "ftp_host"), ("FTP Port", "ftp_port"), ("FTP User", "ftp_user"), ("FTP Pass", "ftp_pass"), ("FTP Path", "ftp_path")]
+        print_rows = [("Printer", "printer")]
+
+        self._build_settings_grid(basic, basic_rows)
+        self._build_settings_grid(ftp, ftp_rows)
+        self._build_settings_grid(prn, print_rows)
 
         buttons = ttk.Frame(frm)
-        buttons.grid(row=16, column=0, columnspan=2, sticky="ew", pady=6)
+        buttons.pack(fill=tk.X, pady=6)
         ttk.Button(buttons, text="保存", command=self.save_settings).pack(side=tk.LEFT, padx=2)
         ttk.Button(buttons, text="保存先参照", command=self.pick_local_dir).pack(side=tk.LEFT, padx=2)
         ttk.Button(buttons, text="FTP接続テスト", command=self.test_ftp).pack(side=tk.LEFT, padx=2)
         ttk.Button(buttons, text="プリンタ再取得", command=self.reload_printers).pack(side=tk.LEFT, padx=2)
+
+    def _build_settings_grid(self, parent: ttk.Frame, rows: list[tuple[str, str]]) -> None:
+        for i, (lbl, key) in enumerate(rows):
+            ttk.Label(parent, text=lbl).grid(row=i, column=0, sticky="w")
+            if key == "ftp_encryption":
+                cb = ttk.Combobox(parent, textvariable=self.vars[key], values=["Implicit TLS/SSL", "Explicit TLS/SSL", "None"], state="readonly")
+                cb.grid(row=i, column=1, sticky="ew", pady=2)
+            else:
+                ttk.Entry(parent, textvariable=self.vars[key], width=40, show="*" if key == "ftp_pass" else "").grid(row=i, column=1, sticky="ew", pady=2)
+        parent.columnconfigure(1, weight=1)
 
     def _build_bottom_area(self) -> None:
         bar = ttk.Frame(self.root, padding=6)
@@ -385,9 +384,6 @@ class OwlViewApp:
         c.ftp_password = self.vars["ftp_pass"].get()
         c.ftp_remote_path_template = self.vars["ftp_path"].get()
         c.default_printer_name = self.vars["printer"].get()
-        c.chromedriver_path = self.vars["chromedriver"].get()
-        c.curl_path = self.vars["curl"].get()
-        c.sumatra_path = self.vars["sumatra"].get()
         self.tools = self._resolve_tools()
         self.store.save(self.cfg)
         self.status_var.set("設定を保存しました")
@@ -536,8 +532,40 @@ class OwlViewApp:
     def preview_only(self) -> None:
         if not self.selected_ids:
             return
+        self.save_settings()
         p = self.cfg.parts[self.selected_ids[0]]
-        messagebox.showinfo("プレビュー", f"対象: {p.part_name}\n向き: {p.orientation}\n倍率: {p.scale}")
+        if not self.tools.chromedriver.exists():
+            messagebox.showerror("プレビュー", f"ChromeDriverが見つかりません: {self.tools.chromedriver}")
+            return
+        preview_dir = self.base_dir / "Settings" / "_preview"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        preview_pdf = preview_dir / f"preview_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from selenium.webdriver.common.by import By
+
+            opts = Options()
+            opts.add_argument("--headless=new")
+            driver = webdriver.Chrome(service=Service(str(self.tools.chromedriver)), options=opts)
+            try:
+                c = self.cfg.common
+                driver.get(c.owlview_home_url)
+                driver.implicitly_wait(c.selenium_wait_sec)
+                box = driver.find_element(By.XPATH, c.xpath_input_box)
+                box.clear()
+                box.send_keys(p.part_name)
+                driver.get(c.owlview_report_url)
+                driver.implicitly_wait(c.selenium_wait_sec)
+                save_pdf(driver, preview_pdf, p)
+            finally:
+                driver.quit()
+            os.startfile(preview_pdf)  # type: ignore[attr-defined]
+            self._log(f"印刷プレビュー表示: {preview_pdf}")
+        except Exception as exc:
+            self._log(f"プレビュー失敗: {exc}")
+            messagebox.showerror("プレビュー", f"印刷プレビュー表示に失敗しました。\n{exc}")
 
     def stop_run(self) -> None:
         if self.runner:

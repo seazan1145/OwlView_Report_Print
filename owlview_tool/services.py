@@ -88,6 +88,17 @@ def save_jpg_from_screenshot(driver, dest: Path, quality: int = 90) -> None:
     tmp.unlink(missing_ok=True)
 
 
+def save_jpg_from_pdf(driver, pdf_path: Path, dest: Path, quality: int = 90) -> None:
+    driver.get(pdf_path.resolve().as_uri())
+    png = driver.get_screenshot_as_png()
+    tmp = dest.with_suffix(".tmp.png")
+    tmp.write_bytes(png)
+    with Image.open(tmp) as im:
+        rgb = im.convert("RGB")
+        rgb.save(dest, "JPEG", quality=quality)
+    tmp.unlink(missing_ok=True)
+
+
 def validate_ftp_path_template(path_template: str) -> list[str]:
     issues: list[str] = []
     v = path_template.strip()
@@ -108,9 +119,21 @@ def resolved_remote_path(path_template: str, token: str | None = None) -> str:
     return path_template.replace("yymmdd", t).strip()
 
 
+def _ftp_scheme(common: CommonConfig) -> str:
+    enc = common.ftp_encryption.lower()
+    return "ftps" if "implicit" in enc else "ftp"
+
+
+def _build_ftp_url(common: CommonConfig, remote_path: str = "") -> str:
+    scheme = _ftp_scheme(common)
+    path = remote_path.strip("/")
+    if path:
+        return f"{scheme}://{common.ftp_host}:{common.ftp_port}/{path}"
+    return f"{scheme}://{common.ftp_host}:{common.ftp_port}/"
+
+
 def _build_curl_base_command(common: CommonConfig, curl_path: Path, *, timeout_sec: int) -> list[str]:
     enc = common.ftp_encryption.lower()
-    scheme = "ftps" if "implicit" in enc else "ftp"
     base = [
         str(curl_path),
         "--connect-timeout",
@@ -126,8 +149,7 @@ def _build_curl_base_command(common: CommonConfig, curl_path: Path, *, timeout_s
     if "explicit" in enc:
         base.append("--ssl-reqd")
     if "implicit" in enc:
-        base.append("--ftp-ssl")
-    base.append(f"{scheme}://{common.ftp_host}:{common.ftp_port}")
+        base.extend(["--ssl-reqd", "--ftp-ssl"])
     return base
 
 
@@ -161,9 +183,8 @@ def run_ftp_curl_command(common: CommonConfig, curl_path: Path, extra_args: list
 
 def ftp_test_connection(common: CommonConfig, curl_path: Path) -> tuple[str, CurlResult]:
     remote = resolved_remote_path(common.ftp_remote_path_template)
-    remote_url = remote.strip("/")
-    test_target = f"{remote_url}/" if remote_url else ""
-    result = run_ftp_curl_command(common, curl_path, ["--list-only", test_target], timeout_sec=15)
+    test_url = _build_ftp_url(common, remote)
+    result = run_ftp_curl_command(common, curl_path, ["--list-only", test_url], timeout_sec=15)
     if result.returncode != 0:
         raise RuntimeError(
             "\n".join(
@@ -187,10 +208,11 @@ def ftp_upload(local_file: Path, common: CommonConfig, curl_path: Path) -> tuple
     remote = resolved_remote_path(common.ftp_remote_path_template)
     remote_clean = remote.strip("/")
     target = f"{remote_clean}/{local_file.name}" if remote_clean else local_file.name
+    target_url = _build_ftp_url(common, target)
     result = run_ftp_curl_command(
         common,
         curl_path,
-        ["--ftp-create-dirs", "--upload-file", str(local_file), target],
+        ["--ftp-create-dirs", "--upload-file", str(local_file), target_url],
         timeout_sec=30,
     )
     if result.returncode != 0:
