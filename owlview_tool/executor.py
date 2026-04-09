@@ -2,24 +2,28 @@ from __future__ import annotations
 
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
 
 from selenium import webdriver
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 from .models import AppConfig, PartConfig
 from .services import (
     ExternalTools,
+    convert_pdf_first_page_to_jpg,
     ftp_upload,
     local_copy,
     print_with_sumatra,
     printer_list,
-    save_jpg_from_pdf,
     save_pdf,
 )
 
@@ -77,6 +81,75 @@ class Runner:
             driver.quit()
         self._emit("done", {"results": results})
 
+    def _wait_ready_state(self, driver, timeout: int, label: str) -> None:
+        WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return document.readyState") == "complete")
+        self._emit("log", {"text": f"{label}: readyState=complete"})
+
+    def _input_part_name(self, driver, part_name: str) -> None:
+        common = self.cfg.common
+        timeout = max(1, common.selenium_wait_sec)
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                self._wait_ready_state(driver, timeout, "homeページ表示後")
+                WebDriverWait(driver, timeout).until(EC.visibility_of_element_located((By.XPATH, common.xpath_input_box)))
+                WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, common.xpath_input_box)))
+                box = driver.find_element(By.XPATH, common.xpath_input_box)
+                box.clear()
+                box = driver.find_element(By.XPATH, common.xpath_input_box)
+                box.send_keys(part_name)
+                self._emit("log", {"text": "入力欄取得成功"})
+                self._emit("log", {"text": f"パート名入力成功: {part_name}"})
+                return
+            except StaleElementReferenceException as exc:
+                last_exc = exc
+                self._emit("log", {"text": f"stale element 発生のため再試行 ({attempt}/3)"})
+                time.sleep(0.2)
+            except TimeoutException as exc:
+                last_exc = exc
+                break
+        raise RuntimeError(f"入力欄操作に失敗しました: {last_exc}")
+
+    def run_capture_flow(self, driver, part: PartConfig, preview_mode: bool = False) -> tuple[list[Path], Path | None]:
+        common = self.cfg.common
+        self._emit("log", {"text": "プレビュー開始" if preview_mode else f"開始: {part.part_name}"})
+        driver.get(common.owlview_home_url)
+        self._emit("log", {"text": "home遷移成功"})
+        self._input_part_name(driver, part.part_name)
+        driver.get(common.owlview_report_url)
+        self._wait_ready_state(driver, max(1, common.selenium_wait_sec), "reportページ遷移後")
+        self._emit("log", {"text": "report遷移成功"})
+
+        stamp = datetime.now().strftime("%y%m%d")
+        base = part.resolved_name(stamp)
+        out_dir = Path(part.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = out_dir / f"{base}.pdf"
+        outputs: list[Path] = []
+
+        save_pdf(driver, pdf_path, part)
+        self._emit("log", {"text": f"PDF保存成功: {pdf_path}"})
+
+        jpg_path: Path | None = None
+        if part.output_format in {"both", "jpg"}:
+            jpg_path = out_dir / f"{base}.jpg"
+            try:
+                convert_pdf_first_page_to_jpg(pdf_path, jpg_path, part.jpg_quality)
+                outputs.append(jpg_path)
+                self._emit("log", {"text": f"JPG変換成功(1ページ目): {jpg_path}"})
+            except Exception as exc:
+                self._emit("log", {"text": f"PDF保存は成功 / JPG変換は失敗: {exc}"})
+                jpg_path = None
+
+        if part.output_format in {"both", "pdf"}:
+            outputs.append(pdf_path)
+        elif part.output_format == "jpg":
+            if jpg_path and pdf_path.exists():
+                pdf_path.unlink(missing_ok=True)
+            else:
+                outputs.append(pdf_path)
+        return outputs, pdf_path
+
     def _run_part(self, driver, idx: int, total: int, part: PartConfig) -> JobResult:
         common = self.cfg.common
         outputs: list[Path] = []
@@ -85,46 +158,7 @@ class Runner:
         tag = f"[{idx}/{total}] {part.part_name}"
         try:
             self._emit("progress", {"value": idx - 1, "total": total, "text": f"開始 {tag}"})
-            self._emit("log", {"text": f"開始: {tag}"})
-            self._emit("log", {"text": f"使用URL(home): {common.owlview_home_url}"})
-            driver.get(common.owlview_home_url)
-            time.sleep(common.selenium_wait_sec)
-            box = driver.find_element(By.XPATH, common.xpath_input_box)
-            box.clear()
-            box.send_keys(part.part_name)
-            self._emit("log", {"text": f"XPath入力成功: {part.part_name}"})
-            time.sleep(common.selenium_wait_sec)
-
-            self._emit("log", {"text": f"使用URL(report): {common.owlview_report_url}"})
-            driver.get(common.owlview_report_url)
-            time.sleep(common.selenium_wait_sec)
-            self._emit("log", {"text": "reportページ遷移成功"})
-
-            stamp = datetime.now().strftime("%y%m%d")
-            base = part.resolved_name(stamp)
-            out_dir = Path(part.output_dir)
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            pdf_path = out_dir / f"{base}.pdf"
-            pdf_generated = False
-            if part.output_format in {"pdf", "both", "jpg"}:
-                save_pdf(driver, pdf_path, part)
-                pdf_generated = True
-                self._emit("log", {"text": f"PDF生成成功: {pdf_path}"})
-            if part.output_format in {"pdf", "both"} and pdf_generated:
-                outputs.append(pdf_path)
-                self._emit("log", {"text": f"PDF保存成功: {pdf_path}"})
-            if part.output_format in {"jpg", "both"}:
-                jpg_path = out_dir / f"{base}.jpg"
-                if not pdf_generated:
-                    save_pdf(driver, pdf_path, part)
-                    pdf_generated = True
-                save_jpg_from_pdf(driver, pdf_path, jpg_path, part.jpg_quality)
-                outputs.append(jpg_path)
-                self._emit("log", {"text": f"JPG保存成功: {jpg_path}"})
-                if part.output_format == "jpg" and pdf_generated and pdf_path.exists():
-                    pdf_path.unlink(missing_ok=True)
-                    self._emit("log", {"text": f"JPG変換用の一時PDFを削除: {pdf_path}"})
+            outputs, _pdf = self.run_capture_flow(driver, part)
 
             self._emit(
                 "log",
@@ -164,20 +198,20 @@ class Runner:
                     self._emit("log", {"text": f"FTP: OFFのためスキップ ({p.name})"})
 
                 if p.suffix.lower() != ".pdf":
-                    status.print_status = "スキップ(PDFのみ)"
-                    self._emit("log", {"text": f"印刷スキップ: PDF以外 ({p.name})"})
+                    status.print_status = "スキップ(対象ファイルがPDFではない)"
+                    self._emit("log", {"text": f"印刷スキップ理由: 対象ファイルが PDF ではない ({p.name})"})
                 elif not part.print_enabled:
                     status.print_status = "スキップ(print_enabled=False)"
-                    self._emit("log", {"text": f"印刷OFFのためスキップ: {p.name}"})
+                    self._emit("log", {"text": f"印刷スキップ理由: print_enabled が false ({p.name})"})
                 elif not part.printer_name:
                     status.print_status = "スキップ(プリンタ未設定)"
-                    self._emit("log", {"text": f"印刷スキップ: printer_name 未設定 ({p.name})"})
+                    self._emit("log", {"text": f"印刷スキップ理由: printer_name 未設定 ({p.name})"})
                 elif not self.tools.sumatra.exists():
                     status.print_status = "スキップ(Sumatra未検出)"
-                    self._emit("log", {"text": f"印刷スキップ: SumatraPDFが見つかりません ({self.tools.sumatra})"})
+                    self._emit("log", {"text": f"印刷スキップ理由: SumatraPDF 不在 ({self.tools.sumatra})"})
                 elif printers and part.printer_name not in printers:
-                    status.print_status = "失敗(プリンタ未存在)"
-                    raise RuntimeError(f"指定プリンタが存在しません: {part.printer_name}")
+                    status.print_status = "スキップ(指定プリンタ未存在)"
+                    self._emit("log", {"text": f"印刷スキップ理由: 指定プリンタ未存在 ({part.printer_name})"})
                 else:
                     self._emit("log", {"text": f"印刷開始: {p.name}"})
                     print_with_sumatra(self.tools.sumatra, p, part.printer_name, max(1, part.copies))
@@ -191,5 +225,6 @@ class Runner:
             return JobResult(part.part_name, True, "ok", outputs, details=details, file_statuses=file_statuses)
         except Exception as exc:
             self._emit("log", {"text": f"失敗: {part.part_name}: {exc}"})
+            self._emit("log", {"text": traceback.format_exc()})
             self._emit("progress", {"value": idx, "total": total, "text": f"失敗 {tag}"})
             return JobResult(part.part_name, False, str(exc), outputs, details=details, file_statuses=file_statuses)
