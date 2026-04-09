@@ -105,9 +105,41 @@ class Runner:
             path = path[:-1]
         return f"{parts.scheme}://{parts.netloc}{path}"
 
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        normalized = (path or "/").strip()
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        if normalized != "/" and normalized.endswith("/"):
+            normalized = normalized[:-1]
+        return normalized
+
+    @classmethod
+    def _is_expected_url(cls, current_url: str, expected_url: str) -> bool:
+        current = urlsplit(current_url.strip())
+        expected = urlsplit(expected_url.strip())
+        if current.scheme != expected.scheme or current.netloc != expected.netloc:
+            return False
+
+        expected_path = cls._normalize_path(expected.path)
+        current_path = cls._normalize_path(current.path)
+        if current_path.startswith(expected_path):
+            return True
+
+        # OwlView が hash routing を使う環境では "/#/report" のように path が fragment 側に入る。
+        fragment = (current.fragment or "").strip()
+        if not fragment:
+            return False
+        fragment_path = fragment.split("?", 1)[0].lstrip("#").strip()
+        if not fragment_path:
+            return False
+        return cls._normalize_path(fragment_path).startswith(expected_path)
+
     def _wait_url_prefix(self, driver, timeout: int, expected_url: str, label: str) -> None:
-        expected = self._normalize_url_path(expected_url)
-        WebDriverWait(driver, timeout).until(lambda d: self._normalize_url_path(d.current_url).startswith(expected))
+        def _matches(d) -> bool:
+            return self._is_expected_url(d.current_url, expected_url)
+
+        WebDriverWait(driver, timeout).until(_matches)
         self._emit("log", {"text": f"{label}: URL確認OK ({driver.current_url})"})
 
     def _find_input(self, driver, timeout: int):
