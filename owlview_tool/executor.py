@@ -14,7 +14,6 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -139,6 +138,10 @@ class Runner:
     def _is_expected_url(cls, current_url: str, expected_url: str) -> bool:
         current = urlsplit(current_url.strip())
         expected = urlsplit(expected_url.strip())
+        current_scheme = (current.scheme or "").lower()
+        expected_scheme = (expected.scheme or "").lower()
+        if not current_scheme or not expected_scheme or current_scheme != expected_scheme:
+            return False
         current_host = (current.hostname or "").lower()
         expected_host = (expected.hostname or "").lower()
         if not current_host or not expected_host or current_host != expected_host:
@@ -185,6 +188,49 @@ class Runner:
         WebDriverWait(driver, timeout).until(EC.element_to_be_clickable(locator))
         return driver.find_element(*locator)
 
+    def _collect_candidate_texts(self, driver) -> list[str]:
+        selectors = [
+            "[role='option']",
+            "[class*='option']",
+            "[class*='suggest']",
+            "li",
+        ]
+        values: list[str] = []
+        for sel in selectors:
+            try:
+                for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                    txt = (el.text or "").strip()
+                    if txt:
+                        values.append(txt)
+            except Exception:
+                continue
+            if values:
+                break
+        uniq: list[str] = []
+        for text in values:
+            if text not in uniq:
+                uniq.append(text)
+        return uniq
+
+    def _brief_wait_after_input(self, driver, timeout: int, before_url: str) -> None:
+        search_xpath = (self.cfg.common.xpath_search_ready or "").strip()
+
+        def _ready(d) -> bool:
+            if d.current_url != before_url:
+                return True
+            if search_xpath:
+                try:
+                    return len(d.find_elements(By.XPATH, search_xpath)) > 0
+                except Exception:
+                    return False
+            return False
+
+        try:
+            WebDriverWait(driver, min(timeout, 2)).until(_ready)
+            self._emit("log", {"text": f"入力後短時間待機: 反映検知 ({driver.current_url})"})
+        except TimeoutException:
+            self._emit("log", {"text": f"入力後短時間待機: 反映検知なし (許容) current_url={driver.current_url}"})
+
     def _input_part_name(self, driver, part_name: str) -> None:
         timeout = max(1, self.cfg.common.selenium_wait_sec)
         last_exc: Exception | None = None
@@ -205,26 +251,25 @@ class Runner:
                 self._emit("log", {"text": f"入力後value: {current}"})
                 if current == part_name:
                     self._emit("log", {"text": f"入力値確認: {part_name}"})
-                    before_enter = driver.current_url
-                    box.send_keys(Keys.ENTER)
-                    self._emit("log", {"text": f"Enter送信後のcurrent_url: {driver.current_url}"})
-                    self._wait_after_enter(driver, before_enter, timeout)
+                    candidates = self._collect_candidate_texts(driver)
+                    self._emit("log", {"text": f"候補一覧: {len(candidates)}件 / 先頭={candidates[:5]}"})
+                    before_wait = driver.current_url
+                    self._brief_wait_after_input(driver, timeout, before_wait)
                     return
 
                 # fallback 1: click + Ctrl+A Delete + send_keys
                 box = self._find_input(driver, timeout)
                 box.click()
-                box.send_keys(Keys.CONTROL, "a")
-                box.send_keys(Keys.DELETE)
+                box.clear()
                 box.send_keys(part_name)
                 current = (box.get_attribute("value") or "").strip()
                 self._emit("log", {"text": f"フォールバック1後value: {current}"})
                 if current == part_name:
                     self._emit("log", {"text": f"入力値確認: {part_name}"})
-                    before_enter = driver.current_url
-                    box.send_keys(Keys.ENTER)
-                    self._emit("log", {"text": f"Enter送信後のcurrent_url: {driver.current_url}"})
-                    self._wait_after_enter(driver, before_enter, timeout)
+                    candidates = self._collect_candidate_texts(driver)
+                    self._emit("log", {"text": f"候補一覧: {len(candidates)}件 / 先頭={candidates[:5]}"})
+                    before_wait = driver.current_url
+                    self._brief_wait_after_input(driver, timeout, before_wait)
                     return
 
                 # fallback 2: JS assign + events
@@ -240,10 +285,10 @@ class Runner:
                 self._emit("log", {"text": f"フォールバック2(JS)後value: {current}"})
                 if current == part_name:
                     self._emit("log", {"text": f"入力値確認: {part_name}"})
-                    before_enter = driver.current_url
-                    box.send_keys(Keys.ENTER)
-                    self._emit("log", {"text": f"Enter送信後のcurrent_url: {driver.current_url}"})
-                    self._wait_after_enter(driver, before_enter, timeout)
+                    candidates = self._collect_candidate_texts(driver)
+                    self._emit("log", {"text": f"候補一覧: {len(candidates)}件 / 先頭={candidates[:5]}"})
+                    before_wait = driver.current_url
+                    self._brief_wait_after_input(driver, timeout, before_wait)
                     return
 
                 raise RuntimeError("取得は成功したが値が入らなかった")
@@ -276,32 +321,6 @@ class Runner:
             html.write_text("page_source failed", encoding="utf-8")
         return shot, html, snippet
 
-    def _wait_after_enter(self, driver, before_url: str, timeout: int) -> None:
-        common = self.cfg.common
-        search_xpath = (common.xpath_search_ready or "").strip()
-        def _ready(d) -> bool:
-            current = d.current_url
-            if current != before_url:
-                return True
-            if self._is_expected_url(current, common.owlview_report_url):
-                return True
-            if search_xpath:
-                try:
-                    return len(d.find_elements(By.XPATH, search_xpath)) > 0
-                except Exception:
-                    return False
-            return False
-
-        try:
-            WebDriverWait(driver, timeout).until(_ready)
-            self._emit("log", {"text": f"Enter後反映待機OK: {driver.current_url}"})
-        except TimeoutException:
-            shot, html, _ = self._capture_debug_artifacts(driver, "enter_wait_timeout")
-            self._emit("log", {"text": f"Enter後反映待機タイムアウト。最終URL: {driver.current_url}"})
-            self._emit("log", {"text": f"timeout時スクリーンショット: {shot}"})
-            self._emit("log", {"text": f"timeout時HTML: {html}"})
-            raise
-
     def _wait_report_marker(self, driver, timeout: int) -> None:
         custom_xpath = self.cfg.common.xpath_report_ready.strip()
 
@@ -325,6 +344,7 @@ class Runner:
     def _navigate_to_report(self, driver) -> None:
         common = self.cfg.common
         timeout = max(1, common.selenium_wait_sec)
+        self._emit("log", {"text": f"report遷移開始URL: {driver.current_url}"})
         driver.get(common.owlview_report_url)
         self._wait_ready_state(driver, timeout, "reportページ遷移成功")
         self._wait_url_prefix(driver, timeout, common.owlview_report_url, "reportページ遷移成功")

@@ -41,8 +41,14 @@ def resolve_tool_path(configured: str, fallback: Path, exe_name: str) -> Path:
         return fallback
     from shutil import which
 
-    found = which(exe_name)
-    return Path(found) if found else fallback
+    candidates: list[str] = [exe_name]
+    if exe_name.lower().endswith(".exe"):
+        candidates.append(exe_name[:-4])
+    for name in candidates:
+        found = which(name)
+        if found:
+            return Path(found)
+    return fallback
 
 
 def printer_list() -> list[str]:
