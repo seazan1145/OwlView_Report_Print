@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 
-OutputFormat = Literal["pdf", "jpg", "both"]
+OutputFormat = Literal["pdf", "jpg", "jpg&pdf"]
 Orientation = Literal["portrait", "landscape"]
 
 
@@ -25,6 +25,7 @@ class PartConfig:
     margin_right: float = 0.0
     paper_width: float = 8.27
     paper_height: float = 11.69
+    print_range: str = ""
     jpg_quality: int = 90
     local_copy_enabled: bool = False
     ftp_upload_enabled: bool = False
@@ -74,7 +75,7 @@ class CommonConfig:
     auto_save_settings: bool = True
     preview_auto_refresh: bool = False
     last_selected_part_index: int = 0
-    window_geometry: str = "1400x900+80+40"
+    window_geometry: str = "1200x800+80+40"
     chromedriver_path: str = ""
     curl_path: str = ""
     sumatra_path: str = ""
@@ -84,7 +85,7 @@ class CommonConfig:
 class AppConfig:
     parts: list[PartConfig] = field(default_factory=list)
     common: CommonConfig = field(default_factory=CommonConfig)
-    version: int = 1
+    version: int = 2
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -93,6 +94,11 @@ class AppConfig:
     def from_dict(cls, data: dict) -> "AppConfig":
         common = CommonConfig(**data.get("common", {}))
         parts = [PartConfig(**p) for p in data.get("parts", [])]
+        for p in parts:
+            if p.output_format == "both":
+                p.output_format = "jpg&pdf"
+            if p.orientation not in {"portrait", "landscape"}:
+                p.orientation = "portrait"
         return cls(parts=parts, common=common, version=int(data.get("version", 1)))
 
 
@@ -101,31 +107,23 @@ def default_seed_config() -> AppConfig:
         parts=[
             PartConfig(
                 enabled=True,
-                part_name="劇場第２章　Bパート",
+                selected=True,
+                part_name="劇場第２章 Bパート",
                 output_name="LLNM2_B_yymmdd",
                 output_dir=r"\\sr-fs\2st-data1\03_Works\LLN劇場第2章\01_制作\Bパート_c171-c343\97_状況報告書",
-                output_format="both",
+                output_format="jpg&pdf",
                 scale=39,
                 orientation="landscape",
-                local_copy_enabled=True,
-                ftp_upload_enabled=True,
-                print_enabled=True,
-                copies=2,
-                printer_name="14-2",
             ),
             PartConfig(
                 enabled=True,
-                part_name="劇場第２章　せつ菜ダンスパート",
+                selected=True,
+                part_name="劇場第２章 せつ菜ダンスパート",
                 output_name="LLNM2_Y_setsuna_yymmdd",
                 output_dir=r"\\sr-fs\2st-data1\03_Works\LLN劇場第2章\01_制作\Yパート_せつ菜ダンス\97_状況報告書",
-                output_format="both",
+                output_format="jpg&pdf",
                 scale=60,
                 orientation="landscape",
-                local_copy_enabled=True,
-                ftp_upload_enabled=True,
-                print_enabled=True,
-                copies=2,
-                printer_name="14-2",
             ),
         ],
         common=CommonConfig(
