@@ -444,7 +444,8 @@ class Runner:
             outputs.append(pdf_path)
         elif part.output_format == "jpg":
             if jpg_path and pdf_path.exists():
-                pdf_path.unlink(missing_ok=True)
+                if not self.run_print_enabled:
+                    pdf_path.unlink(missing_ok=True)
             else:
                 outputs.append(pdf_path)
         return outputs, pdf_path
@@ -483,6 +484,17 @@ class Runner:
 
                 status.print_status = self.print_file(p)
                 file_statuses.append(status)
+
+            if self.run_print_enabled and _pdf and _pdf.exists() and not any(s.print_status == "成功" for s in file_statuses):
+                print_status = self.print_file(_pdf)
+                file_statuses.append(
+                    FileActionStatus(
+                        file_path=_pdf,
+                        local_copy="スキップ(印刷専用)",
+                        ftp="スキップ(印刷専用)",
+                        print_status=print_status,
+                    )
+                )
 
             summary.ftp = "成功" if any(s.ftp.startswith("成功") for s in file_statuses) else ("スキップ" if not self.run_ftp_enabled else "失敗")
             summary.printing = "成功" if any(s.print_status == "成功" for s in file_statuses) else ("スキップ" if not self.run_print_enabled else "未実施/スキップ")

@@ -149,15 +149,24 @@ class PdfPreviewWindow:
             return
         self._sync_part_vars()
         try:
+            self.app._set_preview_progress(10, "プレビューPDF生成を開始")
             pdf_path = self.app.generate_preview_pdf(self.preview_part)
+            self.app._set_preview_progress(65, "PDFを画像化しています")
             self.pdf_path = pdf_path
             self.page_index = 0
             self.base_image = render_pdf_first_page_image(pdf_path, dpi=170)
+            pages = self.app._pdf_page_count(pdf_path)
             self._draw()
             self.status.set(f"再読込完了: {pdf_path.name}")
+            if pages > 1:
+                warn = f"拡縮率/余白設定により {pages} ページになっています。1ページに収まりません。"
+                messagebox.showwarning("プレビュー警告", warn)
+                self.app._log(warn)
+            self.app._set_preview_progress(100, "プレビュー完了")
         except Exception as exc:
             self.status.set(f"失敗: {exc}")
             self.app._append_stacktrace(exc)
+            self.app._set_preview_progress(0, "プレビュー失敗")
 
     def _draw(self) -> None:
         if not self.base_image:
@@ -385,6 +394,23 @@ class OwlViewApp:
             f"出力先:{summary.output_dir} 所要:{elapsed}{error}"
         )
 
+    def _set_preview_progress(self, value: float, text: str) -> None:
+        self.progress_var.set(max(0.0, min(100.0, value)))
+        self.status_var.set(text)
+        self.root.update_idletasks()
+
+    @staticmethod
+    def _pdf_page_count(pdf_path: Path) -> int:
+        try:
+            import fitz  # type: ignore
+        except Exception:
+            return 1
+        doc = fitz.open(pdf_path)
+        try:
+            return max(1, int(doc.page_count))
+        finally:
+            doc.close()
+
     def _change_inline_zoom(self, ratio: float) -> None:
         now = float(self.preview_zoom_var.get())
         self.preview_zoom_var.set(max(0.2, min(4.0, now * ratio)))
@@ -430,13 +456,17 @@ class OwlViewApp:
         part = self.cfg.parts[self.selected_ids[0]]
         self.inline_preview_part = PartConfig(**asdict(part))
         try:
+            self._set_preview_progress(10, "プレビューPDF生成を開始")
             pdf_path = self.generate_preview_pdf(self.inline_preview_part)
+            self._set_preview_progress(70, "PDFを描画しています")
             self.inline_preview_base = self._base_preview_image(pdf_path)
             self._draw_inline_preview()
             self.inline_preview_status.set(f"表示中: {pdf_path.name}")
+            self._set_preview_progress(100, "プレビュー完了")
         except Exception as exc:
             self.inline_preview_status.set(f"失敗: {exc}")
             self._append_stacktrace(exc)
+            self._set_preview_progress(0, "プレビュー失敗")
 
     def _refresh_printer_combo(self) -> None:
         ps = printer_list()
