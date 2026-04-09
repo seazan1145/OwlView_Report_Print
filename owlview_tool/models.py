@@ -28,10 +28,6 @@ class PartConfig:
     print_range: str = ""
     jpg_quality: int = 90
     local_copy_enabled: bool = False
-    ftp_upload_enabled: bool = False
-    print_enabled: bool = False
-    copies: int = 1
-    printer_name: str = ""
     notes: str = ""
 
     def resolved_name(self, token_yymmdd: str) -> str:
@@ -46,8 +42,6 @@ class PartConfig:
             errors.append("scale は 0 より大きい値にしてください")
         if self.jpg_quality < 1 or self.jpg_quality > 100:
             errors.append("jpg_quality は 1〜100 にしてください")
-        if self.copies < 1:
-            errors.append("copies は 1 以上にしてください")
         if self.paper_width <= 0 or self.paper_height <= 0:
             errors.append("用紙サイズは正の値を指定してください")
         return errors
@@ -75,7 +69,10 @@ class CommonConfig:
     auto_save_settings: bool = True
     preview_auto_refresh: bool = False
     last_selected_part_index: int = 0
-    window_geometry: str = "1200x800+80+40"
+    window_geometry: str = "1200x760+80+40"
+    window_maximized: bool = False
+    xpath_report_ready: str = ""
+    xpath_search_ready: str = ""
     chromedriver_path: str = ""
     curl_path: str = ""
     sumatra_path: str = ""
@@ -85,7 +82,7 @@ class CommonConfig:
 class AppConfig:
     parts: list[PartConfig] = field(default_factory=list)
     common: CommonConfig = field(default_factory=CommonConfig)
-    version: int = 2
+    version: int = 3
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -93,12 +90,20 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":
         common = CommonConfig(**data.get("common", {}))
-        parts = [PartConfig(**p) for p in data.get("parts", [])]
+        part_fields = set(PartConfig.__dataclass_fields__.keys())
+        cleaned_parts: list[PartConfig] = []
+        for raw in data.get("parts", []):
+            if not isinstance(raw, dict):
+                continue
+            p = {k: v for k, v in raw.items() if k in part_fields}
+            cleaned_parts.append(PartConfig(**p))
+        parts = cleaned_parts
         for p in parts:
             if p.output_format == "both":
                 p.output_format = "jpg&pdf"
             if p.orientation not in {"portrait", "landscape"}:
                 p.orientation = "portrait"
+            p.local_copy_enabled = bool(p.local_copy_enabled)
         return cls(parts=parts, common=common, version=int(data.get("version", 1)))
 
 

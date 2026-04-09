@@ -68,10 +68,6 @@ def migrate_ini_to_config(ini_path: Path) -> AppConfig:
                 scale=scales[i] if i < len(scales) else scales[-1],
                 orientation="landscape" if (dirs_flag[i] if i < len(dirs_flag) else dirs_flag[-1]) else "portrait",
                 local_copy_enabled=local_copy,
-                ftp_upload_enabled=ftp_upload,
-                print_enabled=print_auto,
-                copies=copies,
-                printer_name=printer_name,
             )
         )
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import traceback
 from dataclasses import asdict
 from datetime import datetime
@@ -28,12 +30,39 @@ def shorten_path(value: str, max_len: int = 48) -> str:
     return f"...{value[-(max_len-3):]}"
 
 
+def safe_geometry(raw: str, screen_w: int, screen_h: int, default_size: tuple[int, int] = (1200, 760)) -> str:
+    width, height = default_size
+    x = max(0, int((screen_w - width) / 2))
+    y = max(0, int((screen_h - height) / 4))
+    try:
+        size_pos = raw.strip()
+        size, *pos = size_pos.split("+")
+        w_s, h_s = size.split("x")
+        width = int(w_s)
+        height = int(h_s)
+        if pos:
+            x = int(pos[0])
+        if len(pos) > 1:
+            y = int(pos[1])
+    except Exception:
+        pass
+
+    min_w, min_h = 980, 620
+    max_w = max(min_w, int(screen_w * 0.98))
+    max_h = max(min_h, int(screen_h * 0.95))
+    width = max(min_w, min(width, max_w))
+    height = max(min_h, min(height, max_h))
+    x = max(0, min(x, max(0, screen_w - width)))
+    y = max(0, min(y, max(0, screen_h - height)))
+    return f"{width}x{height}+{x}+{y}"
+
+
 class PdfPreviewWindow:
     def __init__(self, app: "OwlViewApp") -> None:
         self.app = app
         self.win = tk.Toplevel(app.root)
         self.win.title("印刷プレビュー")
-        self.win.geometry("1100x760")
+        self.win.geometry("1040x700")
         self.current_part_index = -1
         self.preview_part: PartConfig | None = None
         self.pdf_path: Path | None = None
@@ -43,9 +72,11 @@ class PdfPreviewWindow:
         self.photo: ImageTk.PhotoImage | None = None
 
         left = ttk.LabelFrame(self.win, text="設定")
-        left.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=4, pady=4)
+        left.configure(width=230)
+        left.pack_propagate(False)
         right = ttk.Frame(self.win)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         self.vars = {
             "scale": tk.DoubleVar(value=100.0),
@@ -66,16 +97,16 @@ class PdfPreviewWindow:
         ]
         r = 0
         for label, key in rows:
-            ttk.Label(left, text=label).grid(row=r, column=0, sticky="w", padx=4, pady=3)
-            ttk.Entry(left, textvariable=self.vars[key], width=14).grid(row=r, column=1, sticky="ew", padx=4)
+            ttk.Label(left, text=label).grid(row=r, column=0, sticky="w", padx=3, pady=2)
+            ttk.Entry(left, textvariable=self.vars[key], width=12).grid(row=r, column=1, sticky="ew", padx=3, pady=1)
             r += 1
-        ttk.Label(left, text="向き").grid(row=r, column=0, sticky="w", padx=4, pady=3)
-        ttk.Combobox(left, textvariable=self.vars["orientation"], values=["縦", "横"], state="readonly", width=11).grid(row=r, column=1, sticky="ew", padx=4)
+        ttk.Label(left, text="向き").grid(row=r, column=0, sticky="w", padx=3, pady=2)
+        ttk.Combobox(left, textvariable=self.vars["orientation"], values=["縦", "横"], state="readonly", width=9).grid(row=r, column=1, sticky="ew", padx=3, pady=1)
         r += 1
 
-        ttk.Button(left, text="再読込", command=self.reload_pdf).grid(row=r, column=0, columnspan=2, sticky="ew", padx=4, pady=(12, 3))
+        ttk.Button(left, text="再読込", command=self.reload_pdf).grid(row=r, column=0, columnspan=2, sticky="ew", padx=3, pady=(8, 2))
         r += 1
-        ttk.Button(left, text="設定を保存", command=self.save_to_part).grid(row=r, column=0, columnspan=2, sticky="ew", padx=4, pady=3)
+        ttk.Button(left, text="設定を保存", command=self.save_to_part).grid(row=r, column=0, columnspan=2, sticky="ew", padx=3, pady=2)
 
         bar = ttk.Frame(right)
         bar.pack(fill=tk.X)
@@ -178,6 +209,7 @@ class OwlViewApp:
         self.runner: Runner | None = None
         self.preview_window: PdfPreviewWindow | None = None
         self.preview_temp_files: list[Path] = []
+        self.preview_cache: dict[str, Path] = {}
 
         self.search_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
@@ -192,6 +224,7 @@ class OwlViewApp:
         self._build_ui()
         self._refresh_printer_combo()
         self._refresh_part_list()
+        self._log_missing_tools()
         self._poll_queue()
 
     def _resolve_tools(self) -> ExternalTools:
@@ -203,9 +236,21 @@ class OwlViewApp:
             sumatra=resolve_tool_path(c.sumatra_path, data / "SumatraPDF" / "SumatraPDF.exe", "SumatraPDF.exe"),
         )
 
+    def _log_missing_tools(self) -> None:
+        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+            if not path.exists():
+                self._log(f"{name} が見つかりません。設定の明示パスまたはPATHを確認してください: {path}")
+
     def _build_ui(self) -> None:
         self.root.title("OwlView 自動出力ツール")
-        self.root.geometry(self.cfg.common.window_geometry or "1200x800")
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.root.geometry(safe_geometry(self.cfg.common.window_geometry or "1200x760+80+40", sw, sh))
+        if self.cfg.common.window_maximized:
+            try:
+                self.root.state("zoomed")
+            except tk.TclError:
+                pass
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         main = ttk.Frame(self.root, padding=6)
@@ -408,7 +453,6 @@ class OwlViewApp:
             paper_height=float(vars["paper_height"].get()),
             jpg_quality=int(vars["jpg_quality"].get()),
             local_copy_enabled=True,
-            copies=self.cfg.common.default_print_copies,
         )
         errs = new.validate()
         if errs:
@@ -419,23 +463,62 @@ class OwlViewApp:
     # unchanged settings mostly
     def open_detail_settings(self) -> None:
         c = self.cfg.common
-        d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("880x680"); d.columnconfigure(1, weight=1)
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings)}
-        rows = [("OwlView Home URL", "home"), ("OwlView Report URL", "report"), ("XPath", "xpath"), ("Selenium待機秒数", "wait"), ("ローカルコピー先", "local_dir"), ("ChromeDriverパス", "chromedriver"), ("curlパス", "curl"), ("SumatraPDFパス", "sumatra"), ("FTPデフォルト", "ftp_default"), ("FTP Encryption", "ftp_encryption"), ("FTP Host", "ftp_host"), ("FTP Port", "ftp_port"), ("FTP Username", "ftp_user"), ("FTP Password", "ftp_pass"), ("Remote Path Template", "ftp_path"), ("印刷デフォルト", "print_default"), ("デフォルトプリンタ", "default_printer"), ("デフォルト部数", "default_copies"), ("自動保存", "auto_save")]
-        for i, (label, key) in enumerate(rows):
-            ttk.Label(d, text=label).grid(row=i, column=0, sticky="w", padx=6, pady=3)
-            if isinstance(vars[key], tk.BooleanVar):
-                ttk.Checkbutton(d, variable=vars[key]).grid(row=i, column=1, sticky="w")
-            elif key == "ftp_encryption":
-                ttk.Combobox(d, textvariable=vars[key], values=["Implicit TLS/SSL", "Explicit TLS/SSL", "None"], state="readonly").grid(row=i, column=1, sticky="ew", padx=6)
-            elif key == "default_printer":
-                ttk.Combobox(d, textvariable=vars[key], values=printer_list()).grid(row=i, column=1, sticky="ew", padx=6)
-            else:
-                ttk.Entry(d, textvariable=vars[key], show="*" if key == "ftp_pass" else "").grid(row=i, column=1, sticky="ew", padx=6)
+        d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("760x620")
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings)}
+
+        outer = ttk.Frame(d, padding=6)
+        outer.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        body = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def _add_entry(frame, r, label, key, show=""):
+            ttk.Label(frame, text=label).grid(row=r, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(frame, textvariable=vars[key], show=show).grid(row=r, column=1, sticky="ew", padx=4, pady=2)
+
+        sec_web = ttk.LabelFrame(body, text="OwlView/Selenium", padding=6); sec_web.pack(fill=tk.X, pady=(0, 6)); sec_web.columnconfigure(1, weight=1)
+        _add_entry(sec_web, 0, "Home URL", "home")
+        _add_entry(sec_web, 1, "Report URL", "report")
+        _add_entry(sec_web, 2, "入力 XPath", "xpath")
+        _add_entry(sec_web, 3, "検索反映待機 XPath(任意)", "search_ready_xpath")
+        _add_entry(sec_web, 4, "Report到達要素 XPath(任意)", "report_ready_xpath")
+        _add_entry(sec_web, 5, "待機秒数", "wait")
+
+        sec_tool = ttk.LabelFrame(body, text="外部ツール/出力", padding=6); sec_tool.pack(fill=tk.X, pady=(0, 6)); sec_tool.columnconfigure(1, weight=1)
+        _add_entry(sec_tool, 0, "ローカルコピー先", "local_dir")
+        _add_entry(sec_tool, 1, "ChromeDriver パス", "chromedriver")
+        _add_entry(sec_tool, 2, "curl パス", "curl")
+        _add_entry(sec_tool, 3, "SumatraPDF パス", "sumatra")
+
+        sec_ftp = ttk.LabelFrame(body, text="FTP", padding=6); sec_ftp.pack(fill=tk.X, pady=(0, 6)); sec_ftp.columnconfigure(1, weight=1)
+        ttk.Label(sec_ftp, text="FTPデフォルト").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_ftp, variable=vars["ftp_default"]).grid(row=0, column=1, sticky="w")
+        ttk.Label(sec_ftp, text="Encryption").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Combobox(sec_ftp, textvariable=vars["ftp_encryption"], values=["Implicit TLS/SSL", "Explicit TLS/SSL", "None"], state="readonly").grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+        _add_entry(sec_ftp, 2, "Host", "ftp_host")
+        _add_entry(sec_ftp, 3, "Port", "ftp_port")
+        _add_entry(sec_ftp, 4, "Username", "ftp_user")
+        _add_entry(sec_ftp, 5, "Password", "ftp_pass", show="*")
+        _add_entry(sec_ftp, 6, "Remote Path Template", "ftp_path")
+
+        sec_print = ttk.LabelFrame(body, text="印刷/保存", padding=6); sec_print.pack(fill=tk.X); sec_print.columnconfigure(1, weight=1)
+        ttk.Label(sec_print, text="印刷デフォルト").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_print, variable=vars["print_default"]).grid(row=0, column=1, sticky="w")
+        ttk.Label(sec_print, text="デフォルトプリンタ").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Combobox(sec_print, textvariable=vars["default_printer"], values=printer_list()).grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+        _add_entry(sec_print, 2, "デフォルト部数", "default_copies")
+        ttk.Label(sec_print, text="自動保存").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_print, variable=vars["auto_save"]).grid(row=3, column=1, sticky="w")
+
         def _save_detail() -> None:
-            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_default_enabled = bool(vars["ftp_default"].get()); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.print_default_enabled = bool(vars["print_default"].get()); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_default_enabled = bool(vars["ftp_default"].get()); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.print_default_enabled = bool(vars["print_default"].get()); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
             self.store.save(self.cfg); self.tools = self._resolve_tools(); self.main_printer_var.set(c.default_printer_name); self._refresh_printer_combo(); self._log("詳細設定を保存しました"); d.destroy()
-        btns = ttk.Frame(d); btns.grid(row=len(rows), column=0, columnspan=2, sticky="ew", padx=6, pady=10)
+        btns = ttk.Frame(d); btns.pack(fill=tk.X, padx=8, pady=8)
         ttk.Button(btns, text="FTP接続テスト", command=self.test_ftp).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="保存", command=_save_detail).pack(side=tk.RIGHT, padx=2)
 
@@ -475,13 +558,9 @@ class OwlViewApp:
 
     def _apply_main_toggles(self, parts: list[PartConfig]) -> list[PartConfig]:
         cloned: list[PartConfig] = []
-        printer = self.main_printer_var.get().strip()
         for p in parts:
             cp = PartConfig(**asdict(p))
-            cp.ftp_upload_enabled = self.main_ftp_var.get()
-            cp.print_enabled = self.main_print_var.get()
-            cp.printer_name = printer
-            cp.copies = max(1, self.cfg.common.default_print_copies)
+            cp.local_copy_enabled = True
             cloned.append(cp)
         return cloned
 
@@ -504,7 +583,15 @@ class OwlViewApp:
         errors = self._validate_before_run(valid)
         if errors: messagebox.showerror("実行前バリデーション", "\n".join(errors)); return
         self._log(f"使用プリンタ: {self.main_printer_var.get()}")
-        self.runner = Runner(self.cfg, self.tools, self.queue)
+        self.runner = Runner(
+            self.cfg,
+            self.tools,
+            self.queue,
+            run_ftp_enabled=self.main_ftp_var.get(),
+            run_print_enabled=self.main_print_var.get(),
+            run_printer_name=self.main_printer_var.get(),
+            run_copies=max(1, self.cfg.common.default_print_copies),
+        )
         self.runner.run_async(valid)
 
     def run_single(self) -> None:
@@ -526,9 +613,22 @@ class OwlViewApp:
         if not self.tools.chromedriver.exists():
             raise RuntimeError(f"ChromeDriverが見つかりません: {self.tools.chromedriver}")
         preview_dir = self.base_dir / "Settings" / "_preview"
+        key_payload = {
+            "part": asdict(part),
+            "home": self.cfg.common.owlview_home_url,
+            "report": self.cfg.common.owlview_report_url,
+            "xpath": self.cfg.common.xpath_input_box,
+            "wait": self.cfg.common.selenium_wait_sec,
+        }
+        cache_key = hashlib.sha1(json.dumps(key_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        cached = self.preview_cache.get(cache_key)
+        if cached and cached.exists():
+            self._log(f"プレビューキャッシュ使用: {cached.name}")
+            return cached
         runner = Runner(self.cfg, self.tools, self.queue)
         pdf, _ = runner.run_preview_capture(part, preview_dir)
         self.preview_temp_files.append(pdf)
+        self.preview_cache[cache_key] = pdf
         for old in self.preview_temp_files[:-3]:
             old.unlink(missing_ok=True)
         self.preview_temp_files = self.preview_temp_files[-3:]
@@ -599,6 +699,11 @@ class OwlViewApp:
         self.log_text.insert(tk.END, text + "\n"); self.log_text.see(tk.END)
 
     def on_close(self) -> None:
-        self.cfg.common.default_printer_name = self.main_printer_var.get(); self.cfg.common.window_geometry = self.root.geometry(); self.store.save(self.cfg)
+        self.cfg.common.default_printer_name = self.main_printer_var.get()
+        self.cfg.common.window_maximized = self.root.state() == "zoomed"
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        self.cfg.common.window_geometry = safe_geometry(self.root.geometry(), sw, sh)
+        self.store.save(self.cfg)
         for p in self.preview_temp_files: p.unlink(missing_ok=True)
         self.root.destroy()
