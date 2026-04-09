@@ -75,6 +75,8 @@ def save_pdf(driver, dest: Path, part: PartConfig) -> None:
         "scale": part.scale / 100.0,
         "landscape": part.orientation == "landscape",
     }
+    if part.print_range.strip():
+        prefs["pageRanges"] = part.print_range.strip()
     data = driver.execute_cdp_cmd("Page.printToPDF", prefs)["data"]
     dest.write_bytes(base64.b64decode(data))
 
