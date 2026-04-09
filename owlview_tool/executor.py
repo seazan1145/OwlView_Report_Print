@@ -3,10 +3,10 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+from pathlib import Path
 from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from queue import Queue
 
 from selenium import webdriver
@@ -41,11 +41,32 @@ class JobResult:
 
 
 class Runner:
-    def __init__(self, cfg: AppConfig, tools: ExternalTools, queue: Queue):
+    REPORT_READY_SELECTORS = [
+        "main",
+        "[data-testid*='report']",
+        "[id*='report']",
+        ".report",
+    ]
+
+    def __init__(
+        self,
+        cfg: AppConfig,
+        tools: ExternalTools,
+        queue: Queue,
+        *,
+        run_ftp_enabled: bool = False,
+        run_print_enabled: bool = False,
+        run_printer_name: str = "",
+        run_copies: int = 1,
+    ):
         self.cfg = cfg
         self.tools = tools
         self.queue = queue
         self.stop_event = threading.Event()
+        self.run_ftp_enabled = run_ftp_enabled
+        self.run_print_enabled = run_print_enabled
+        self.run_printer_name = run_printer_name.strip()
+        self.run_copies = max(1, int(run_copies))
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -138,9 +159,17 @@ class Runner:
     def _wait_url_prefix(self, driver, timeout: int, expected_url: str, label: str) -> None:
         def _matches(d) -> bool:
             return self._is_expected_url(d.current_url, expected_url)
-
-        WebDriverWait(driver, timeout).until(_matches)
-        self._emit("log", {"text": f"{label}: URL確認OK ({driver.current_url})"})
+        try:
+            WebDriverWait(driver, timeout).until(_matches)
+            self._emit("log", {"text": f"{label}: URL確認OK ({driver.current_url})"})
+        except TimeoutException:
+            shot, html, snippet = self._capture_debug_artifacts(driver, "wait_url_timeout")
+            self._emit("log", {"text": f"{label}: URL待機タイムアウト current_url={driver.current_url}"})
+            self._emit("log", {"text": f"timeout時スクリーンショット: {shot}"})
+            self._emit("log", {"text": f"timeout時HTML: {html}"})
+            if snippet:
+                self._emit("log", {"text": f"page_source抜粋: {snippet}"})
+            raise
 
     def _find_input(self, driver, timeout: int):
         locator = (By.XPATH, self.cfg.common.xpath_input_box)
@@ -152,6 +181,9 @@ class Runner:
     def _input_part_name(self, driver, part_name: str) -> None:
         timeout = max(1, self.cfg.common.selenium_wait_sec)
         last_exc: Exception | None = None
+        self._emit("log", {"text": f"開始時URL: {driver.current_url}"})
+        self._emit("log", {"text": f"入力XPath: {self.cfg.common.xpath_input_box}"})
+        self._emit("log", {"text": f"入力対象part_name: {part_name}"})
         self._wait_ready_state(driver, timeout, "homeページ遷移成功")
         for attempt in range(1, 4):
             try:
@@ -166,7 +198,10 @@ class Runner:
                 self._emit("log", {"text": f"入力後value: {current}"})
                 if current == part_name:
                     self._emit("log", {"text": f"入力値確認: {part_name}"})
+                    before_enter = driver.current_url
                     box.send_keys(Keys.ENTER)
+                    self._emit("log", {"text": f"Enter送信後のcurrent_url: {driver.current_url}"})
+                    self._wait_after_enter(driver, before_enter, timeout)
                     return
 
                 # fallback 1: click + Ctrl+A Delete + send_keys
@@ -179,7 +214,10 @@ class Runner:
                 self._emit("log", {"text": f"フォールバック1後value: {current}"})
                 if current == part_name:
                     self._emit("log", {"text": f"入力値確認: {part_name}"})
+                    before_enter = driver.current_url
                     box.send_keys(Keys.ENTER)
+                    self._emit("log", {"text": f"Enter送信後のcurrent_url: {driver.current_url}"})
+                    self._wait_after_enter(driver, before_enter, timeout)
                     return
 
                 # fallback 2: JS assign + events
@@ -195,7 +233,10 @@ class Runner:
                 self._emit("log", {"text": f"フォールバック2(JS)後value: {current}"})
                 if current == part_name:
                     self._emit("log", {"text": f"入力値確認: {part_name}"})
+                    before_enter = driver.current_url
                     box.send_keys(Keys.ENTER)
+                    self._emit("log", {"text": f"Enter送信後のcurrent_url: {driver.current_url}"})
+                    self._wait_after_enter(driver, before_enter, timeout)
                     return
 
                 raise RuntimeError("取得は成功したが値が入らなかった")
@@ -209,12 +250,85 @@ class Runner:
                 time.sleep(0.2)
         raise RuntimeError(f"入力欄操作に失敗しました: {last_exc}")
 
+    def _capture_debug_artifacts(self, driver, prefix: str) -> tuple[Path, Path, str]:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        debug_dir = Path(self.cfg.common.default_output_root or ".") / "Settings" / "_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        shot = debug_dir / f"{prefix}_{stamp}.png"
+        html = debug_dir / f"{prefix}_{stamp}.html"
+        snippet = ""
+        try:
+            driver.save_screenshot(str(shot))
+        except Exception:
+            shot.write_text("screenshot failed", encoding="utf-8")
+        try:
+            source = driver.page_source or ""
+            html.write_text(source, encoding="utf-8")
+            snippet = " ".join(source[:300].split())
+        except Exception:
+            html.write_text("page_source failed", encoding="utf-8")
+        return shot, html, snippet
+
+    def _wait_after_enter(self, driver, before_url: str, timeout: int) -> None:
+        common = self.cfg.common
+        search_xpath = (common.xpath_search_ready or "").strip()
+        def _ready(d) -> bool:
+            current = d.current_url
+            if current != before_url:
+                return True
+            if self._is_expected_url(current, common.owlview_report_url):
+                return True
+            if search_xpath:
+                try:
+                    return len(d.find_elements(By.XPATH, search_xpath)) > 0
+                except Exception:
+                    return False
+            return False
+
+        try:
+            WebDriverWait(driver, timeout).until(_ready)
+            self._emit("log", {"text": f"Enter後反映待機OK: {driver.current_url}"})
+        except TimeoutException:
+            shot, html, _ = self._capture_debug_artifacts(driver, "enter_wait_timeout")
+            self._emit("log", {"text": f"Enter後反映待機タイムアウト。最終URL: {driver.current_url}"})
+            self._emit("log", {"text": f"timeout時スクリーンショット: {shot}"})
+            self._emit("log", {"text": f"timeout時HTML: {html}"})
+            raise
+
+    def _wait_report_marker(self, driver, timeout: int) -> None:
+        custom_xpath = self.cfg.common.xpath_report_ready.strip()
+
+        def _has_marker(d) -> bool:
+            if custom_xpath:
+                try:
+                    return len(d.find_elements(By.XPATH, custom_xpath)) > 0
+                except Exception:
+                    return False
+            for sel in self.REPORT_READY_SELECTORS:
+                try:
+                    if d.find_elements(By.CSS_SELECTOR, sel):
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        WebDriverWait(driver, timeout).until(_has_marker)
+        self._emit("log", {"text": "report到達判定要素: 確認OK"})
+
     def _navigate_to_report(self, driver) -> None:
         common = self.cfg.common
         timeout = max(1, common.selenium_wait_sec)
         driver.get(common.owlview_report_url)
         self._wait_ready_state(driver, timeout, "reportページ遷移成功")
         self._wait_url_prefix(driver, timeout, common.owlview_report_url, "reportページ遷移成功")
+        try:
+            self._wait_report_marker(driver, timeout)
+        except TimeoutException:
+            shot, html, _ = self._capture_debug_artifacts(driver, "report_marker_timeout")
+            self._emit("log", {"text": f"report要素待機タイムアウト。最終URL: {driver.current_url}"})
+            self._emit("log", {"text": f"timeout時スクリーンショット: {shot}"})
+            self._emit("log", {"text": f"timeout時HTML: {html}"})
+            raise
         self._emit("log", {"text": f"report遷移成功: {driver.current_url}"})
 
     def run_capture_flow(self, driver, part: PartConfig, preview_mode: bool = False) -> tuple[list[Path], Path | None]:
@@ -264,7 +378,7 @@ class Runner:
         try:
             self._emit("progress", {"value": idx - 1, "total": total, "text": f"開始 {tag}"})
             outputs, _pdf = self.run_capture_flow(driver, part)
-            self._emit("log", {"text": f"使用プリンタ: {part.printer_name or '(未設定)'}"})
+            self._emit("log", {"text": f"使用プリンタ: {self.run_printer_name or '(未設定)'}"})
             printers = printer_list()
             for p in outputs:
                 status = FileActionStatus(file_path=p)
@@ -274,7 +388,7 @@ class Runner:
                 else:
                     status.local_copy = "スキップ(OFF)"
 
-                if part.ftp_upload_enabled:
+                if self.run_ftp_enabled:
                     target, _ = ftp_upload(p, common, self.tools.curl)
                     status.ftp = f"成功 ({target})"
                 else:
@@ -282,16 +396,16 @@ class Runner:
 
                 if p.suffix.lower() != ".pdf":
                     status.print_status = "スキップ(PDFのみ)"
-                elif not part.print_enabled:
+                elif not self.run_print_enabled:
                     status.print_status = "スキップ(OFF)"
-                elif not part.printer_name:
+                elif not self.run_printer_name:
                     status.print_status = "スキップ(プリンタ未設定)"
-                elif printers and part.printer_name not in printers:
+                elif printers and self.run_printer_name not in printers:
                     status.print_status = "スキップ(指定プリンタ未存在)"
                 elif not self.tools.sumatra.exists():
                     status.print_status = "スキップ(Sumatra未検出)"
                 else:
-                    print_with_sumatra(self.tools.sumatra, p, part.printer_name, max(1, part.copies))
+                    print_with_sumatra(self.tools.sumatra, p, self.run_printer_name, self.run_copies)
                     status.print_status = "成功"
                 file_statuses.append(status)
 
