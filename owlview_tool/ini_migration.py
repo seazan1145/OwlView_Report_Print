@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .models import AppConfig, CommonConfig, PartConfig
+from .models import AppCommonConfig, AppConfig, JobCommonConfig, PartConfig
 
 
 def _read_ini(path: Path) -> dict[str | None, list[str]]:
@@ -71,9 +71,8 @@ def migrate_ini_to_config(ini_path: Path) -> AppConfig:
             )
         )
 
-    common = CommonConfig(
+    app = AppCommonConfig(
         selenium_wait_sec=wait,
-        ftp_default_enabled=ftp_upload,
         ftp_protocol=ftp_dict.get("protocol", "FTP"),
         ftp_encryption=ftp_dict.get("encryption", "Implicit TLS/SSL"),
         ftp_host=ftp_dict.get("host", ""),
@@ -81,8 +80,11 @@ def migrate_ini_to_config(ini_path: Path) -> AppConfig:
         ftp_username=ftp_dict.get("username", ""),
         ftp_password=ftp_dict.get("password", ""),
         ftp_remote_path_template=ftp_path,
-        print_default_enabled=print_auto,
         default_printer_name=printer_name,
         default_print_copies=copies,
     )
-    return AppConfig(parts=parts, common=common)
+    job = JobCommonConfig(
+        ftp_default_enabled=ftp_upload,
+        print_default_enabled=print_auto,
+    )
+    return AppConfig(parts=parts, app=app, job=job)

@@ -4,6 +4,7 @@ import os
 import json
 import hashlib
 import traceback
+import urllib.request
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -218,7 +219,9 @@ class OwlViewApp:
         self.selected_ids: list[int] = []
         self.main_ftp_var = tk.BooleanVar(value=True)
         self.main_print_var = tk.BooleanVar(value=True)
-        self.main_printer_var = tk.StringVar(value=self.cfg.common.default_printer_name)
+        self.main_printer_var = tk.StringVar(value=self.cfg.app.default_printer_name)
+        self.main_ftp_var.set(bool(self.cfg.job.ftp_default_enabled))
+        self.main_print_var.set(bool(self.cfg.job.print_default_enabled))
 
         self.tools = self._resolve_tools()
         self._build_ui()
@@ -260,8 +263,8 @@ class OwlViewApp:
         self.root.title("OwlView 自動出力ツール")
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        self.root.geometry(safe_geometry(self.cfg.common.window_geometry or "1200x760+80+40", sw, sh))
-        if self.cfg.common.window_maximized:
+        self.root.geometry(safe_geometry(self.cfg.ui.window_geometry or "1200x760+80+40", sw, sh))
+        if self.cfg.ui.window_maximized:
             try:
                 self.root.state("zoomed")
             except tk.TclError:
@@ -348,6 +351,7 @@ class OwlViewApp:
         util.pack(fill=tk.X, pady=4)
         ttk.Button(util, text="印刷プレビューを開く", command=self.open_preview_window).pack(side=tk.LEFT, padx=2, pady=4)
         ttk.Button(util, text="詳細設定", command=self.open_detail_settings).pack(side=tk.LEFT, padx=2, pady=4)
+        ttk.Button(util, text="環境チェック", command=self.run_environment_check).pack(side=tk.LEFT, padx=2, pady=4)
         ttk.Button(util, text="出力先を開く", command=self.open_output_dir).pack(side=tk.LEFT, padx=2, pady=4)
 
     def _build_log_area(self, parent: ttk.Frame) -> None:
@@ -490,7 +494,7 @@ class OwlViewApp:
         c = self.cfg.common
         d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
         dbg = c.debug
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
 
         outer = ttk.Frame(d, padding=6)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -558,9 +562,10 @@ class OwlViewApp:
         ttk.Checkbutton(sec_debug, variable=vars["dbg_report_direct"]).grid(row=7, column=1, sticky="w")
 
         def _save_detail() -> None:
-            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_default_enabled = bool(vars["ftp_default"].get()); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.print_default_enabled = bool(vars["print_default"].get()); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            self.cfg.job.ftp_default_enabled = bool(vars["ftp_default"].get()); self.cfg.job.print_default_enabled = bool(vars["print_default"].get())
             c.debug.enabled = bool(vars["dbg_enabled"].get()); c.debug.headless = bool(vars["dbg_headless"].get()); c.debug.verbose_log = bool(vars["dbg_verbose"].get()); c.debug.save_screenshot_on_error = bool(vars["dbg_shot"].get()); c.debug.save_html_on_error = bool(vars["dbg_html"].get()); c.debug.selenium_wait_timeout = int(vars["dbg_wait"].get()); c.debug.input_settle_wait = float(vars["dbg_settle"].get()); c.debug.report_direct_navigation = bool(vars["dbg_report_direct"].get())
-            self.store.save(self.cfg); self.tools = self._resolve_tools(); self.main_printer_var.set(c.default_printer_name); self._refresh_printer_combo(); self._log("詳細設定を保存しました"); d.destroy()
+            self.store.save(self.cfg); self.tools = self._resolve_tools(); self.main_printer_var.set(c.default_printer_name); self.main_ftp_var.set(self.cfg.job.ftp_default_enabled); self.main_print_var.set(self.cfg.job.print_default_enabled); self._refresh_printer_combo(); self._log("詳細設定を保存しました"); d.destroy()
         btns = ttk.Frame(d); btns.pack(fill=tk.X, padx=8, pady=8)
         ttk.Button(btns, text="FTP接続テスト", command=self.test_ftp).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="保存", command=_save_detail).pack(side=tk.RIGHT, padx=2)
@@ -704,6 +709,71 @@ class OwlViewApp:
     def reload_printers(self) -> None:
         self._refresh_printer_combo(); ps = printer_list(); messagebox.showinfo("Printer", "\n".join(ps) if ps else "プリンタが見つかりません")
 
+    def run_environment_check(self) -> None:
+        checks: list[tuple[str, str, str]] = []
+
+        def add(name: str, status: str, detail: str) -> None:
+            checks.append((name, status, detail))
+
+        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+            if path.exists():
+                add(name, "成功", f"検出: {path}")
+            else:
+                add(name, "失敗", f"未検出: 設定値={path}")
+
+        try:
+            ps = printer_list()
+            if ps:
+                add("プリンタ一覧", "成功", f"{len(ps)}件検出 (先頭: {ps[0]})")
+            else:
+                add("プリンタ一覧", "警告", "取得できませんでした (環境依存の可能性)")
+        except Exception as exc:
+            add("プリンタ一覧", "失敗", str(exc))
+
+        add("Settings読み込み", "成功", f"version={self.cfg.version}")
+
+        output_target = ""
+        if self.selected_ids:
+            output_target = self.cfg.parts[self.selected_ids[0]].output_dir
+        output_target = output_target or self.cfg.job.shared_output_dir or str(self.base_dir / "Settings")
+        try:
+            out = Path(output_target)
+            out.mkdir(parents=True, exist_ok=True)
+            probe = out / ".write_test.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            add("出力先書き込み", "成功", str(out))
+        except Exception as exc:
+            add("出力先書き込み", "失敗", f"{output_target} / {exc}")
+
+        try:
+            with urllib.request.urlopen(self.cfg.common.owlview_home_url, timeout=8) as resp:
+                code = getattr(resp, "status", 200)
+            add("OwlView home到達", "成功" if int(code) < 400 else "警告", f"status={code} url={self.cfg.common.owlview_home_url}")
+        except Exception as exc:
+            add("OwlView home到達", "失敗", str(exc))
+
+        if self.main_ftp_var.get():
+            if not self.tools.curl.exists():
+                add("FTP簡易接続", "失敗", f"curl未検出: {self.tools.curl}")
+            else:
+                try:
+                    remote, _ = ftp_test_connection(self.cfg.common, self.tools.curl)
+                    add("FTP簡易接続", "成功", f"remote={remote}")
+                except Exception as exc:
+                    add("FTP簡易接続", "失敗", str(exc))
+        else:
+            add("FTP簡易接続", "警告", "FTPがOFFのため未実施")
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("環境チェック結果")
+        txt = tk.Text(dlg, width=120, height=24)
+        txt.pack(fill=tk.BOTH, expand=True)
+        for name, status, detail in checks:
+            txt.insert(tk.END, f"[{status}] {name}\n  {detail}\n")
+        ttk.Button(dlg, text="閉じる", command=dlg.destroy).pack(side=tk.RIGHT, padx=6, pady=6)
+        self._log("環境チェック完了")
+
     def stop_run(self) -> None:
         if self.runner: self.runner.stop()
 
@@ -763,10 +833,12 @@ class OwlViewApp:
 
     def on_close(self) -> None:
         self.cfg.common.default_printer_name = self.main_printer_var.get()
-        self.cfg.common.window_maximized = self.root.state() == "zoomed"
+        self.cfg.ui.window_maximized = self.root.state() == "zoomed"
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        self.cfg.common.window_geometry = safe_geometry(self.root.geometry(), sw, sh)
+        self.cfg.ui.window_geometry = safe_geometry(self.root.geometry(), sw, sh)
+        self.cfg.job.ftp_default_enabled = bool(self.main_ftp_var.get())
+        self.cfg.job.print_default_enabled = bool(self.main_print_var.get())
         self.store.save(self.cfg)
         for p in self.preview_temp_files: p.unlink(missing_ok=True)
         self.root.destroy()
