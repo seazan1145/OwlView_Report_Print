@@ -221,8 +221,35 @@ const findHot = () => {
   }
   return null;
 };
+const buildDomOnlyPayload = () => {
+  const grid = document.querySelector('#grid');
+  if (!grid) return null;
+  const headerCells = Array.from(grid.querySelectorAll('.ht_clone_top thead tr:last-child th'))
+    .filter(th => !((th.className || '').includes('rowHeader')) && !((th.className || '').includes('cornerHeader')));
+  const headers = headerCells.map(th => strip((th.querySelector('span.colHeader') || th).textContent || ''));
+  const bodyRows = Array.from(grid.querySelectorAll('.ht_master tbody tr'));
+  if (!headers.length && !bodyRows.length) return null;
+  const merged = [];
+  if (headers.length) merged.push(headers);
+  for (const tr of bodyRows) {
+    const tds = Array.from(tr.querySelectorAll('td')).filter(td => !((td.className || '').includes('rowHeader')));
+    merged.push(tds.map(td => strip(td.textContent || '')));
+  }
+  return {
+    project: getText('.HeaderCommonProjectName span:nth-of-type(2)'),
+    episode: getText('.HeaderCommonEpisodeName span:nth-of-type(2)'),
+    merged_sheet: merged,
+    flat_sheet: merged.map(r => r.slice()),
+    merges: [],
+    warning: 'Handsontable未取得のためDOMフォールバックを使用',
+  };
+};
 const hot = findHot();
-if (!hot) return { error: 'Handsontable インスタンス取得失敗' };
+if (!hot) {
+  const fallback = buildDomOnlyPayload();
+  if (fallback) return fallback;
+  return { error: 'Handsontable インスタンス取得失敗' };
+}
 const data = (typeof hot.getData === 'function') ? (hot.getData() || []) : [];
 const colCount = (typeof hot.countCols === 'function') ? hot.countCols() : ((data[0] || []).length);
 const headerRows = [];
@@ -308,6 +335,8 @@ return {
             raise RuntimeError("inputtableデータ抽出結果が不正です")
         if payload.get("error"):
             raise RuntimeError(str(payload.get("error")))
+        if payload.get("warning"):
+            self._log(f"inputtable前処理: {payload.get('warning')}")
         return payload
 
     def _run_inputtable_export_if_enabled(self, driver, part: PartConfig) -> Path | None:
@@ -315,18 +344,22 @@ return {
             return None
         output_dir = self._resolve_excel_output_dir(part)
         self._log(f"inputtable前処理: 開始 ({part.part_name})")
-        driver.get(self._inputtable_url())
-        self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
-        payload = self._extract_inputtable_payload(driver)
-        out_path = output_dir / self._build_excel_filename(payload)
-        save_inputtable_excel(
-            output_path=out_path,
-            merged_sheet=payload.get("merged_sheet", []),
-            merged_ranges=payload.get("merges", []),
-            flat_sheet=payload.get("flat_sheet", []),
-        )
-        self._log(f"inputtable Excel保存成功: {out_path}")
-        return out_path
+        try:
+            driver.get(self._inputtable_url())
+            self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
+            payload = self._extract_inputtable_payload(driver)
+            out_path = output_dir / self._build_excel_filename(payload)
+            save_inputtable_excel(
+                output_path=out_path,
+                merged_sheet=payload.get("merged_sheet", []),
+                merged_ranges=payload.get("merges", []),
+                flat_sheet=payload.get("flat_sheet", []),
+            )
+            self._log(f"inputtable Excel保存成功: {out_path}")
+            return out_path
+        except Exception as exc:
+            self._log(f"inputtable前処理失敗(続行): {exc} / current_url={driver.current_url}")
+            return None
 
     def _wait_ready_state(self, driver, timeout: int, label: str) -> None:
         WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return document.readyState") == "complete")
