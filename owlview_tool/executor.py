@@ -192,6 +192,45 @@ class Runner:
         base += f"_{today}"
         return sanitize_filename(base) + ".xlsx"
 
+    def _wait_inputtable_grid_ready(self, driver, timeout: int) -> None:
+        def _ready(d) -> bool:
+            if "/inputtable" not in d.current_url:
+                return False
+            try:
+                grid = d.find_elements(By.CSS_SELECTOR, "#grid")
+                if not grid:
+                    return False
+                if d.find_elements(By.CSS_SELECTOR, "#grid .ht_master tbody tr"):
+                    return True
+                if d.find_elements(By.CSS_SELECTOR, "#grid thead th"):
+                    return True
+                if d.find_elements(By.CSS_SELECTOR, "#grid table") or d.find_elements(By.CSS_SELECTOR, "#grid .handsontable") or d.find_elements(By.CSS_SELECTOR, "#grid .ht_master"):
+                    return True
+                return False
+            except Exception:
+                return False
+
+        WebDriverWait(driver, timeout).until(_ready)
+
+    def _inputtable_dom_stats(self, driver) -> dict:
+        script = """
+const q = (s) => document.querySelector(s);
+const qa = (s) => document.querySelectorAll(s).length;
+return {
+  url: location.href,
+  has_grid: !!q('#grid'),
+  has_ht_master: !!q('#grid .ht_master'),
+  has_handsontable: !!q('#grid .handsontable'),
+  thead_tr_count: qa('#grid thead tr'),
+  tbody_tr_count: qa('#grid tbody tr'),
+};
+"""
+        try:
+            result = driver.execute_script(script)
+            return result if isinstance(result, dict) else {}
+        except Exception:
+            return {}
+
     def _extract_inputtable_payload(self, driver) -> dict:
         js = r"""
 const strip = (s) => {
@@ -206,41 +245,129 @@ const getText = (sel) => {
   const el = document.querySelector(sel);
   return el ? (el.textContent || '').trim() : '';
 };
+const buildMatrixFromRows = (rows, colCountHint = 0) => {
+  const parsed = rows.map(cells => cells.map(c => ({
+    text: strip(c.text || ''),
+    colspan: Math.max(1, parseInt(c.colspan || 1, 10) || 1),
+    rowspan: Math.max(1, parseInt(c.rowspan || 1, 10) || 1),
+  })));
+  let colCount = Math.max(0, colCountHint);
+  for (const row of parsed) {
+    const width = row.reduce((s, c) => s + c.colspan, 0);
+    if (width > colCount) colCount = width;
+  }
+  if (!colCount) return { matrix: [], merges: [], colCount: 0 };
+  const matrix = Array.from({ length: parsed.length }, () => Array(colCount).fill(''));
+  const occ = Array.from({ length: parsed.length }, () => Array(colCount).fill(false));
+  const merges = [];
+  for (let r = 0; r < parsed.length; r++) {
+    let c = 0;
+    for (const cell of parsed[r]) {
+      while (c < colCount && occ[r][c]) c++;
+      if (c >= colCount) break;
+      const colspan = Math.max(1, Math.min(colCount - c, cell.colspan));
+      const rowspan = Math.max(1, Math.min(parsed.length - r, cell.rowspan));
+      matrix[r][c] = cell.text;
+      for (let rr = 0; rr < rowspan; rr++) {
+        for (let cc = 0; cc < colspan; cc++) {
+          occ[r + rr][c + cc] = true;
+          if (rr !== 0 || cc !== 0) matrix[r + rr][c + cc] = '';
+        }
+      }
+      if (rowspan > 1 || colspan > 1) {
+        merges.push({ s: { r, c }, e: { r: r + rowspan - 1, c: c + colspan - 1 } });
+      }
+      c += colspan;
+    }
+  }
+  return { matrix, merges, colCount };
+};
 const findHot = () => {
   const grid = document.querySelector('#grid');
   if (!grid) return null;
   const HT = window.Handsontable;
+  const candidates = [grid, grid.querySelector('.ht_master'), grid.querySelector('.handsontable')].filter(Boolean);
   if (HT && typeof HT.getInstance === 'function') {
-    const i = HT.getInstance(grid) || HT.getInstance(grid.querySelector('.ht_master')) || HT.getInstance(grid.querySelector('.handsontable'));
-    if (i) return i;
+    for (const el of candidates) {
+      try {
+        const i = HT.getInstance(el);
+        if (i && typeof i.getData === 'function') return i;
+      } catch (_) {}
+    }
+  }
+  if (HT && HT.Core && typeof HT.Core.getInstance === 'function') {
+    for (const el of candidates) {
+      try {
+        const i = HT.Core.getInstance(el);
+        if (i && typeof i.getData === 'function') return i;
+      } catch (_) {}
+    }
   }
   const $ = window.jQuery || window.$;
-  if ($ && typeof $(grid).handsontable === 'function') {
-    const i = $(grid).handsontable('getInstance');
-    if (i) return i;
+  if ($) {
+    for (const el of candidates) {
+      try {
+        if (typeof $(el).handsontable === 'function') {
+          const i = $(el).handsontable('getInstance');
+          if (i && typeof i.getData === 'function') return i;
+        }
+      } catch (_) {}
+      try {
+        const i = $(el).data('handsontable');
+        if (i && typeof i.getData === 'function') return i;
+      } catch (_) {}
+    }
   }
   return null;
 };
 const buildDomOnlyPayload = () => {
   const grid = document.querySelector('#grid');
   if (!grid) return null;
-  const headerCells = Array.from(grid.querySelectorAll('.ht_clone_top thead tr:last-child th'))
-    .filter(th => !((th.className || '').includes('rowHeader')) && !((th.className || '').includes('cornerHeader')));
-  const headers = headerCells.map(th => strip((th.querySelector('span.colHeader') || th).textContent || ''));
-  const bodyRows = Array.from(grid.querySelectorAll('.ht_master tbody tr'));
-  if (!headers.length && !bodyRows.length) return null;
-  const merged = [];
-  if (headers.length) merged.push(headers);
-  for (const tr of bodyRows) {
-    const tds = Array.from(tr.querySelectorAll('td')).filter(td => !((td.className || '').includes('rowHeader')));
-    merged.push(tds.map(td => strip(td.textContent || '')));
+  const thRowsRaw = Array.from(grid.querySelectorAll('.ht_clone_top thead tr, .ht_master thead tr'))
+    .filter(tr => !tr.querySelector('input,select,textarea,button'));
+  const thRows = thRowsRaw.map(tr =>
+    Array.from(tr.children)
+      .filter(th => th.tagName === 'TH' && !((th.className || '').includes('rowHeader')) && !((th.className || '').includes('cornerHeader')))
+      .map(th => ({
+        text: (th.querySelector('span.colHeader') || th).textContent || '',
+        colspan: th.getAttribute('colspan') || 1,
+        rowspan: th.getAttribute('rowspan') || 1,
+      }))
+  ).filter(r => r.length > 0);
+  const bodyRowsRaw = Array.from(grid.querySelectorAll('.ht_master tbody tr'));
+  const tdRows = bodyRowsRaw.map(tr =>
+    Array.from(tr.children)
+      .filter(td => td.tagName === 'TD' && !((td.className || '').includes('rowHeader')))
+      .map(td => ({
+        text: td.textContent || '',
+        colspan: td.getAttribute('colspan') || 1,
+        rowspan: td.getAttribute('rowspan') || 1,
+      }))
+  ).filter(r => r.length > 0);
+  if (!thRows.length && !tdRows.length) return null;
+  const head = buildMatrixFromRows(thRows);
+  const body = buildMatrixFromRows(tdRows, head.colCount);
+  const merged = [...head.matrix, ...body.matrix];
+  const merges = [...head.merges];
+  for (const m of body.merges) {
+    merges.push({ s: { r: m.s.r + head.matrix.length, c: m.s.c }, e: { r: m.e.r + head.matrix.length, c: m.e.c } });
+  }
+  const flat = merged.map(r => r.slice());
+  for (const m of merges) {
+    const v = (flat[m.s.r] && flat[m.s.r][m.s.c]) || '';
+    for (let rr = m.s.r; rr <= m.e.r; rr++) {
+      if (!flat[rr]) continue;
+      for (let cc = m.s.c; cc <= m.e.c; cc++) {
+        if (flat[rr][cc] == null || flat[rr][cc] === '') flat[rr][cc] = v;
+      }
+    }
   }
   return {
     project: getText('.HeaderCommonProjectName span:nth-of-type(2)'),
     episode: getText('.HeaderCommonEpisodeName span:nth-of-type(2)'),
     merged_sheet: merged,
-    flat_sheet: merged.map(r => r.slice()),
-    merges: [],
+    flat_sheet: flat,
+    merges,
     warning: 'Handsontable未取得のためDOMフォールバックを使用',
   };
 };
@@ -347,8 +474,25 @@ return {
         try:
             driver.get(self._inputtable_url())
             self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
-            payload = self._extract_inputtable_payload(driver)
+            self._wait_inputtable_grid_ready(driver, self._wait_timeout())
+            stats = self._inputtable_dom_stats(driver)
+            self._log(f"inputtable状態: {stats}")
+            payload: dict | None = None
+            last_error: Exception | None = None
+            for attempt in range(1, 4):
+                try:
+                    payload = self._extract_inputtable_payload(driver)
+                    if not payload.get("merged_sheet"):
+                        raise RuntimeError("DOM抽出結果が空")
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    self._log(f"inputtable抽出リトライ {attempt}/3 失敗: {exc}")
+                    time.sleep(0.7)
+            if not payload:
+                raise RuntimeError(f"inputtable抽出失敗: {last_error}")
             out_path = output_dir / self._build_excel_filename(payload)
+            self._log(f"inputtable出力先: {out_path}")
             save_inputtable_excel(
                 output_path=out_path,
                 merged_sheet=payload.get("merged_sheet", []),
