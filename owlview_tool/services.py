@@ -65,6 +65,8 @@ def print_with_sumatra(sumatra: Path, pdf_path: Path, printer: str, copies: int)
         stderr=subprocess.PIPE,
         check=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
     )
 
@@ -245,6 +247,8 @@ def run_ftp_curl_command(common: CommonConfig, curl_path: Path, extra_args: list
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
         check=False,
     )

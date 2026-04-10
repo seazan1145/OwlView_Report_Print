@@ -282,25 +282,43 @@ const buildMatrixFromRows = (rows, colCountHint = 0) => {
   }
   return { matrix, merges, colCount };
 };
+const hotTrace = [];
 const findHot = () => {
   const grid = document.querySelector('#grid');
-  if (!grid) return null;
+  if (!grid) {
+    hotTrace.push('findHot: #grid not found');
+    return null;
+  }
   const HT = window.Handsontable;
-  const candidates = [grid, grid.querySelector('.ht_master'), grid.querySelector('.handsontable')].filter(Boolean);
+  const candidates = [grid, grid.querySelector('.handsontable'), grid.querySelector('.ht_master'), ...Array.from(grid.querySelectorAll('.handsontable'))].filter(Boolean);
+  const label = (el) => {
+    try { return el.id ? `#${el.id}` : (el.className ? `.${String(el.className).split(' ').filter(Boolean).join('.')}` : el.tagName); }
+    catch (_) { return 'el'; }
+  };
   if (HT && typeof HT.getInstance === 'function') {
     for (const el of candidates) {
       try {
         const i = HT.getInstance(el);
-        if (i && typeof i.getData === 'function') return i;
-      } catch (_) {}
+        if (i && typeof i.getData === 'function') {
+          hotTrace.push(`findHot: Handsontable.getInstance(${label(el)}) -> success`);
+          return i;
+        }
+        hotTrace.push(`findHot: Handsontable.getInstance(${label(el)}) -> none`);
+      } catch (e) { hotTrace.push(`findHot: Handsontable.getInstance(${label(el)}) -> fail`); }
     }
+  } else {
+    hotTrace.push('findHot: window.Handsontable.getInstance unavailable');
   }
   if (HT && HT.Core && typeof HT.Core.getInstance === 'function') {
     for (const el of candidates) {
       try {
         const i = HT.Core.getInstance(el);
-        if (i && typeof i.getData === 'function') return i;
-      } catch (_) {}
+        if (i && typeof i.getData === 'function') {
+          hotTrace.push(`findHot: Handsontable.Core.getInstance(${label(el)}) -> success`);
+          return i;
+        }
+        hotTrace.push(`findHot: Handsontable.Core.getInstance(${label(el)}) -> none`);
+      } catch (_) { hotTrace.push(`findHot: Handsontable.Core.getInstance(${label(el)}) -> fail`); }
     }
   }
   const $ = window.jQuery || window.$;
@@ -309,15 +327,32 @@ const findHot = () => {
       try {
         if (typeof $(el).handsontable === 'function') {
           const i = $(el).handsontable('getInstance');
-          if (i && typeof i.getData === 'function') return i;
+          if (i && typeof i.getData === 'function') {
+            hotTrace.push(`findHot: jQuery.handsontable(getInstance ${label(el)}) -> success`);
+            return i;
+          }
         }
-      } catch (_) {}
+      } catch (_) { hotTrace.push(`findHot: jQuery.handsontable(getInstance ${label(el)}) -> fail`); }
       try {
         const i = $(el).data('handsontable');
-        if (i && typeof i.getData === 'function') return i;
-      } catch (_) {}
+        if (i && typeof i.getData === 'function') {
+          hotTrace.push(`findHot: jQuery.data('handsontable' ${label(el)}) -> success`);
+          return i;
+        }
+      } catch (_) { hotTrace.push(`findHot: jQuery.data('handsontable' ${label(el)}) -> fail`); }
     }
   }
+  for (const key of Object.keys(window)) {
+    try {
+      const v = window[key];
+      if (!v || typeof v !== 'object') continue;
+      if (typeof v.getData === 'function' && v.rootElement && grid.contains(v.rootElement)) {
+        hotTrace.push(`findHot: window scan -> success (${key})`);
+        return v;
+      }
+    } catch (_) {}
+  }
+  hotTrace.push('findHot: all strategies failed');
   return null;
 };
 const buildDomOnlyPayload = () => {
@@ -369,20 +404,36 @@ const buildDomOnlyPayload = () => {
     flat_sheet: flat,
     merges,
     warning: 'Handsontable未取得のためDOMフォールバックを使用',
+    hot_trace: hotTrace,
+    extraction_mode: 'dom_fallback',
+    visible_row_count: merged.length,
+    visible_col_count: Math.max(0, ...merged.map(r => r.length)),
   };
 };
 const hot = findHot();
 if (!hot) {
   const fallback = buildDomOnlyPayload();
   if (fallback) return fallback;
-  return { error: 'Handsontable インスタンス取得失敗' };
+  return { error: 'Handsontable インスタンス取得失敗', hot_trace: hotTrace };
 }
 const data = (typeof hot.getData === 'function') ? (hot.getData() || []) : [];
 const colCount = (typeof hot.countCols === 'function') ? hot.countCols() : ((data[0] || []).length);
+const rowCount = (typeof hot.countRows === 'function') ? hot.countRows() : data.length;
+const nestedHeaders = (() => { try { return (hot.getSettings && hot.getSettings().nestedHeaders) || null; } catch (_) { return null; } })();
 const headerRows = [];
 const headerMerges = [];
+if (Array.isArray(nestedHeaders) && nestedHeaders.length) {
+  const norm = nestedHeaders.map(row => row.map(cell => {
+    if (cell == null) return { text: '', colspan: 1, rowspan: 1 };
+    if (typeof cell === 'string' || typeof cell === 'number') return { text: String(cell), colspan: 1, rowspan: 1 };
+    return { text: cell.label ?? cell.title ?? cell.name ?? '', colspan: cell.colspan ?? 1, rowspan: cell.rowspan ?? 1 };
+  }));
+  const built = buildMatrixFromRows(norm, colCount);
+  for (const r of built.matrix) headerRows.push(r);
+  for (const m of built.merges) headerMerges.push(m);
+}
 const thead = document.querySelector('#grid .ht_clone_top thead') || document.querySelector('#grid .ht_master thead');
-if (thead) {
+if (thead && !headerRows.length) {
   const trs = Array.from(thead.querySelectorAll('tr')).filter(tr => !tr.querySelector('input,select,textarea,button'));
   const occ = Array.from({length: trs.length}, () => Array(colCount).fill(false));
   for (let r=0; r<trs.length; r++) {
@@ -455,6 +506,13 @@ return {
   merged_sheet: aoa,
   flat_sheet: flat,
   merges: allMerges,
+  hot_trace: hotTrace,
+  extraction_mode: 'handsontable',
+  hot_row_count: rowCount,
+  hot_col_count: colCount,
+  data_row_count: data.length,
+  data_col_count: Math.max(0, ...data.map(r => Array.isArray(r) ? r.length : 0)),
+  merge_count: allMerges.length,
 };
 """
         payload = driver.execute_script(js)
@@ -462,8 +520,20 @@ return {
             raise RuntimeError("inputtableデータ抽出結果が不正です")
         if payload.get("error"):
             raise RuntimeError(str(payload.get("error")))
+        trace = payload.get("hot_trace")
+        if isinstance(trace, list):
+            for line in trace[:40]:
+                self._log(str(line), verbose=True)
         if payload.get("warning"):
             self._log(f"inputtable前処理: {payload.get('warning')}")
+        self._log(
+            f"inputtable抽出モード={payload.get('extraction_mode')} "
+            f"rows={payload.get('hot_row_count', payload.get('visible_row_count', 0))} "
+            f"cols={payload.get('hot_col_count', payload.get('visible_col_count', 0))} "
+            f"merge={payload.get('merge_count', 0)}",
+        )
+        if payload.get("extraction_mode") == "dom_fallback":
+            self._log("inputtable前処理: DOMフォールバックは可視範囲のみの可能性あり")
         return payload
 
     def _run_inputtable_export_if_enabled(self, driver, part: PartConfig) -> Path | None:
@@ -493,6 +563,9 @@ return {
                 raise RuntimeError(f"inputtable抽出失敗: {last_error}")
             out_path = output_dir / self._build_excel_filename(payload)
             self._log(f"inputtable出力先: {out_path}")
+            merged_rows = payload.get("merged_sheet", [])
+            max_cols = max((len(r) for r in merged_rows), default=0) if isinstance(merged_rows, list) else 0
+            self._log(f"inputtable最終出力サイズ: rows={len(merged_rows) if isinstance(merged_rows, list) else 0}, cols={max_cols}")
             save_inputtable_excel(
                 output_path=out_path,
                 merged_sheet=payload.get("merged_sheet", []),
