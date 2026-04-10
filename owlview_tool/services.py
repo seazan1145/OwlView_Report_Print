@@ -65,6 +65,8 @@ def print_with_sumatra(sumatra: Path, pdf_path: Path, printer: str, copies: int)
         stderr=subprocess.PIPE,
         check=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
     )
 
@@ -245,6 +247,8 @@ def run_ftp_curl_command(common: CommonConfig, curl_path: Path, extra_args: list
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=creationflags,
         check=False,
     )
@@ -315,3 +319,46 @@ def local_copy(src: Path, common: CommonConfig) -> None:
         return
     dst_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst_dir / src.name)
+
+
+def sanitize_filename(value: str, max_len: int = 140) -> str:
+    name = (value or "").replace("\u00a0", " ")
+    for ch in '\\/:*?"<>|':
+        name = name.replace(ch, "_")
+    name = " ".join(name.split()).strip()
+    return name[:max_len] if max_len > 0 else name
+
+
+def save_inputtable_excel(
+    *,
+    output_path: Path,
+    merged_sheet: list[list[str]],
+    merged_ranges: list[dict],
+    flat_sheet: list[list[str]],
+) -> None:
+    try:
+        from openpyxl import Workbook  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("Excel出力には openpyxl が必要です。") from exc
+
+    wb = Workbook()
+    ws_table = wb.active
+    ws_table.title = "Table"
+    for row in merged_sheet:
+        ws_table.append(list(row))
+    for m in merged_ranges:
+        s = m.get("s", {})
+        e = m.get("e", {})
+        sr = int(s.get("r", 0)) + 1
+        sc = int(s.get("c", 0)) + 1
+        er = int(e.get("r", 0)) + 1
+        ec = int(e.get("c", 0)) + 1
+        if er > sr or ec > sc:
+            ws_table.merge_cells(start_row=sr, start_column=sc, end_row=er, end_column=ec)
+
+    ws_flat = wb.create_sheet("Flat")
+    for row in flat_sheet:
+        ws_flat.append(list(row))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(output_path)
