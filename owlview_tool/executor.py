@@ -290,7 +290,17 @@ const findHot = () => {
     return null;
   }
   const HT = window.Handsontable;
-  const candidates = [grid, grid.querySelector('.handsontable'), grid.querySelector('.ht_master'), ...Array.from(grid.querySelectorAll('.handsontable'))].filter(Boolean);
+  hotTrace.push(`findHot: window.Handsontable exists = ${!!HT}`);
+  hotTrace.push(`findHot: typeof Handsontable.getInstance = ${HT ? typeof HT.getInstance : 'undefined'}`);
+  const candidates = [
+    grid,
+    grid.querySelector('.handsontable'),
+    grid.querySelector('.ht_master'),
+    grid.querySelector('.ht_master .handsontable'),
+    grid.querySelector('table.htCore'),
+    ...Array.from(grid.querySelectorAll('.handsontable')),
+    ...Array.from(grid.querySelectorAll('.ht_master')),
+  ].filter(Boolean);
   const label = (el) => {
     try { return el.id ? `#${el.id}` : (el.className ? `.${String(el.className).split(' ').filter(Boolean).join('.')}` : el.tagName); }
     catch (_) { return 'el'; }
@@ -350,6 +360,16 @@ const findHot = () => {
         hotTrace.push(`findHot: window scan -> success (${key})`);
         return v;
       }
+      for (const subKey of Object.keys(v).slice(0, 80)) {
+        try {
+          const sub = v[subKey];
+          if (!sub || typeof sub !== 'object') continue;
+          if (typeof sub.getData === 'function' && sub.rootElement && grid.contains(sub.rootElement)) {
+            hotTrace.push(`findHot: nested window scan -> success (${key}.${subKey})`);
+            return sub;
+          }
+        } catch (_) {}
+      }
     } catch (_) {}
   }
   hotTrace.push('findHot: all strategies failed');
@@ -403,7 +423,7 @@ const buildDomOnlyPayload = () => {
     merged_sheet: merged,
     flat_sheet: flat,
     merges,
-    warning: 'Handsontable未取得のためDOMフォールバックを使用',
+    warning: 'Handsontable未取得のためDOMフォールバックを使用 (partial extraction suspected)',
     hot_trace: hotTrace,
     extraction_mode: 'dom_fallback',
     visible_row_count: merged.length,
@@ -523,7 +543,7 @@ return {
         trace = payload.get("hot_trace")
         if isinstance(trace, list):
             for line in trace[:40]:
-                self._log(str(line), verbose=True)
+                self._log(str(line))
         if payload.get("warning"):
             self._log(f"inputtable前処理: {payload.get('warning')}")
         self._log(
@@ -533,7 +553,7 @@ return {
             f"merge={payload.get('merge_count', 0)}",
         )
         if payload.get("extraction_mode") == "dom_fallback":
-            self._log("inputtable前処理: DOMフォールバックは可視範囲のみの可能性あり")
+            self._log("inputtable前処理: DOMフォールバックは可視範囲のみの可能性あり (partial extraction suspected)")
         return payload
 
     def _run_inputtable_export_if_enabled(self, driver, part: PartConfig) -> Path | None:
@@ -545,10 +565,12 @@ return {
             driver.get(self._inputtable_url())
             self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
             self._wait_inputtable_grid_ready(driver, self._wait_timeout())
+            time.sleep(0.3)
             stats = self._inputtable_dom_stats(driver)
             self._log(f"inputtable状態: {stats}")
             payload: dict | None = None
             last_error: Exception | None = None
+            retry_waits = [0.5, 1.0, 1.5]
             for attempt in range(1, 4):
                 try:
                     payload = self._extract_inputtable_payload(driver)
@@ -558,7 +580,7 @@ return {
                 except Exception as exc:
                     last_error = exc
                     self._log(f"inputtable抽出リトライ {attempt}/3 失敗: {exc}")
-                    time.sleep(0.7)
+                    time.sleep(retry_waits[attempt - 1])
             if not payload:
                 raise RuntimeError(f"inputtable抽出失敗: {last_error}")
             out_path = output_dir / self._build_excel_filename(payload)
