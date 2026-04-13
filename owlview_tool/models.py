@@ -85,7 +85,6 @@ class AppCommonConfig:
     default_printer_name: str = ""
     default_print_copies: int = 1
     auto_save_settings: bool = True
-    chromedriver_path: str = ""
     curl_path: str = ""
     sumatra_path: str = ""
     debug: DebugConfig = field(default_factory=DebugConfig)

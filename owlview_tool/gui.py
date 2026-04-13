@@ -250,19 +250,18 @@ class OwlViewApp:
         data = self.base_dir / "Data"
         c = self.cfg.common
         return ExternalTools(
-            chromedriver=resolve_tool_path(c.chromedriver_path, data / "chromedriver.exe", "chromedriver.exe"),
             curl=resolve_tool_path(c.curl_path, data / "curl" / "curl.exe", "curl.exe"),
             sumatra=resolve_tool_path(c.sumatra_path, data / "SumatraPDF" / "SumatraPDF.exe", "SumatraPDF.exe"),
         )
 
     def _log_missing_tools(self) -> None:
-        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+        for name, path in [("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
             if not path.exists():
                 self._log(f"{name} が見つかりません。設定の明示パスまたはPATHを確認してください: {path}")
 
     def _show_missing_tool_dialog(self) -> None:
         missing: list[str] = []
-        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+        for name, path in [("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
             if not path.exists():
                 missing.append(f"- {name}: {path}")
         if not missing:
@@ -611,7 +610,7 @@ class OwlViewApp:
         c = self.cfg.common
         d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
         dbg = c.debug
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
 
         outer = ttk.Frame(d, padding=6)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -638,9 +637,8 @@ class OwlViewApp:
 
         sec_tool = ttk.LabelFrame(body, text="外部ツール/出力", padding=6); sec_tool.pack(fill=tk.X, pady=(0, 6)); sec_tool.columnconfigure(1, weight=1)
         _add_entry(sec_tool, 0, "ローカルコピー先", "local_dir")
-        _add_entry(sec_tool, 1, "ChromeDriver パス", "chromedriver")
-        _add_entry(sec_tool, 2, "curl パス", "curl")
-        _add_entry(sec_tool, 3, "SumatraPDF パス", "sumatra")
+        _add_entry(sec_tool, 1, "curl パス", "curl")
+        _add_entry(sec_tool, 2, "SumatraPDF パス", "sumatra")
 
         sec_ftp = ttk.LabelFrame(body, text="FTP", padding=6); sec_ftp.pack(fill=tk.X, pady=(0, 6)); sec_ftp.columnconfigure(1, weight=1)
         ttk.Label(sec_ftp, text="FTPデフォルト").grid(row=0, column=0, sticky="w", padx=4, pady=2)
@@ -679,7 +677,7 @@ class OwlViewApp:
         ttk.Checkbutton(sec_debug, variable=vars["dbg_report_direct"]).grid(row=7, column=1, sticky="w")
 
         def _save_detail() -> None:
-            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
             self.cfg.job.ftp_default_enabled = bool(vars["ftp_default"].get()); self.cfg.job.print_default_enabled = bool(vars["print_default"].get())
             c.debug.enabled = bool(vars["dbg_enabled"].get()); c.debug.headless = bool(vars["dbg_headless"].get()); c.debug.verbose_log = bool(vars["dbg_verbose"].get()); c.debug.save_screenshot_on_error = bool(vars["dbg_shot"].get()); c.debug.save_html_on_error = bool(vars["dbg_html"].get()); c.debug.selenium_wait_timeout = int(vars["dbg_wait"].get()); c.debug.input_settle_wait = float(vars["dbg_settle"].get()); c.debug.report_direct_navigation = bool(vars["dbg_report_direct"].get())
             self._invalidate_preview_caches()
@@ -737,7 +735,6 @@ class OwlViewApp:
 
     def _validate_before_run(self, parts: list[PartConfig]) -> list[str]:
         errs: list[str] = []
-        if not self.tools.chromedriver.exists(): errs.append(f"ChromeDriver が見つかりません: {self.tools.chromedriver}")
         if self.excel_only_var.get():
             if not self.tools.curl.exists() and any(p.enable_inputtable_excel_export or self.excel_only_var.get() for p in parts):
                 # Excel出力本体にはcurl不要。環境警告ノイズを避けるため何もしない。
@@ -787,8 +784,6 @@ class OwlViewApp:
         self._start_run(self.cfg.parts)
 
     def generate_preview_pdf(self, part: PartConfig) -> Path:
-        if not self.tools.chromedriver.exists():
-            raise RuntimeError(f"ChromeDriverが見つかりません: {self.tools.chromedriver}")
         preview_dir = self.base_dir / "Settings" / "_preview"
         key_payload = {
             "part": asdict(part),
@@ -846,11 +841,13 @@ class OwlViewApp:
         def add(name: str, status: str, detail: str) -> None:
             checks.append((name, status, detail))
 
-        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+        for name, path in [("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
             if path.exists():
                 add(name, "成功", f"検出: {path}")
             else:
                 add(name, "失敗", f"未検出: 設定値={path}")
+
+        add("Selenium Manager", "情報", "ChromeDriver固定パスは未使用。webdriver.Chrome(...) で自動解決します")
 
         try:
             ps = printer_list()

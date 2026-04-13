@@ -10,9 +10,8 @@ from datetime import datetime
 from queue import Queue
 
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -159,7 +158,17 @@ class Runner:
         opts = Options()
         if self.cfg.common.debug.headless:
             opts.add_argument("--headless=new")
-        return webdriver.Chrome(service=Service(str(self.tools.chromedriver)), options=opts)
+        try:
+            return webdriver.Chrome(options=opts)
+        except WebDriverException as exc:
+            message = (
+                "Chrome WebDriverの起動に失敗しました。"
+                "Selenium Managerによる自動解決に失敗した可能性があります。\n"
+                "確認ポイント: Chromeのインストール状態 / Seleniumパッケージ / 社内ネットワーク制限 / プロキシ設定。\n"
+                f"詳細: {exc}"
+            )
+            self._log(message)
+            raise RuntimeError(message) from exc
 
     def open_home(self, driver) -> None:
         common = self.cfg.common
