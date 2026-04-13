@@ -882,8 +882,10 @@ return {
         if part.output_format == "jpg":
             _out_dir = Path(part.output_dir)
             _out_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%y%m%d")
+            temp_base = part.resolved_name(stamp)
             with tempfile.NamedTemporaryFile(
-                prefix=f".{sanitize_filename(part.filename_base)}_",
+                prefix=f".{sanitize_filename(temp_base)}_",
                 suffix=".pdf",
                 dir=_out_dir,
                 delete=False,
