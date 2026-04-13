@@ -880,7 +880,7 @@ return {
         outputs: list[Path] = []
         temp_pdf_path: Path | None = None
         if part.output_format == "jpg":
-            _out_dir = self.output_dir(part)
+            _out_dir = Path(part.output_dir)
             _out_dir.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 prefix=f".{sanitize_filename(part.filename_base)}_",
