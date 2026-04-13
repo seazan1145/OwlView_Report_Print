@@ -21,7 +21,6 @@ except ImportError:  # pragma: no cover
 
 @dataclass
 class ExternalTools:
-    chromedriver: Path
     curl: Path
     sumatra: Path
 
