@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 from dataclasses import dataclass, field
@@ -877,7 +878,21 @@ return {
         self.open_report(driver)
 
         outputs: list[Path] = []
-        _out_dir, pdf_path = self.export_pdf(driver, part)
+        temp_pdf_path: Path | None = None
+        if part.output_format == "jpg":
+            _out_dir = self.output_dir(part)
+            _out_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{sanitize_filename(part.filename_base)}_",
+                suffix=".pdf",
+                dir=_out_dir,
+                delete=False,
+            ) as tmp_pdf:
+                temp_pdf_path = Path(tmp_pdf.name)
+            save_pdf(driver, temp_pdf_path, part)
+            pdf_path = temp_pdf_path
+        else:
+            _out_dir, pdf_path = self.export_pdf(driver, part)
 
         jpg_path: Path | None = None
         if part.output_format in {"jpg&pdf", "jpg"}:
@@ -886,12 +901,8 @@ return {
 
         if part.output_format in {"jpg&pdf", "pdf"}:
             outputs.append(pdf_path)
-        elif part.output_format == "jpg":
-            if jpg_path and pdf_path.exists():
-                if not self.run_print_enabled:
-                    pdf_path.unlink(missing_ok=True)
-            else:
-                outputs.append(pdf_path)
+        elif part.output_format == "jpg" and not jpg_path:
+            outputs.append(pdf_path)
         return outputs, pdf_path
 
     def run_capture_flow(self, driver, part: PartConfig, preview_mode: bool = False) -> tuple[list[Path], Path | None]:
@@ -959,6 +970,8 @@ return {
 
             summary.ftp = "成功" if any(s.ftp.startswith("成功") for s in file_statuses) else ("スキップ" if not self.run_ftp_enabled else "失敗")
             summary.printing = "成功" if any(s.print_status == "成功" for s in file_statuses) else ("スキップ" if not self.run_print_enabled else "未実施/スキップ")
+            if part.output_format == "jpg" and _pdf and _pdf.exists():
+                _pdf.unlink(missing_ok=True)
             details.append("保存完了")
             self._emit("progress", {"value": idx, "total": total, "text": f"完了 {tag}"})
             summary.finished_at = datetime.now()
