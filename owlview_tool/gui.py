@@ -4,6 +4,7 @@ import os
 import json
 import hashlib
 import traceback
+import urllib.request
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -148,15 +149,24 @@ class PdfPreviewWindow:
             return
         self._sync_part_vars()
         try:
+            self.app._set_preview_progress(10, "プレビューPDF生成を開始")
             pdf_path = self.app.generate_preview_pdf(self.preview_part)
+            self.app._set_preview_progress(65, "PDFを画像化しています")
             self.pdf_path = pdf_path
             self.page_index = 0
             self.base_image = render_pdf_first_page_image(pdf_path, dpi=170)
+            pages = self.app._pdf_page_count(pdf_path)
             self._draw()
             self.status.set(f"再読込完了: {pdf_path.name}")
+            if pages > 1:
+                warn = f"拡縮率/余白設定により {pages} ページになっています。1ページに収まりません。"
+                messagebox.showwarning("プレビュー警告", warn)
+                self.app._log(warn)
+            self.app._set_preview_progress(100, "プレビュー完了")
         except Exception as exc:
             self.status.set(f"失敗: {exc}")
             self.app._append_stacktrace(exc)
+            self.app._set_preview_progress(0, "プレビュー失敗")
 
     def _draw(self) -> None:
         if not self.base_image:
@@ -210,6 +220,10 @@ class OwlViewApp:
         self.preview_window: PdfPreviewWindow | None = None
         self.preview_temp_files: list[Path] = []
         self.preview_cache: dict[str, Path] = {}
+        self.preview_image_cache: dict[str, Image.Image] = {}
+        self.inline_preview_base: Image.Image | None = None
+        self.inline_preview_part: PartConfig | None = None
+        self.inline_preview_photo: ImageTk.PhotoImage | None = None
 
         self.search_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Ready")
@@ -218,7 +232,11 @@ class OwlViewApp:
         self.selected_ids: list[int] = []
         self.main_ftp_var = tk.BooleanVar(value=True)
         self.main_print_var = tk.BooleanVar(value=True)
-        self.main_printer_var = tk.StringVar(value=self.cfg.common.default_printer_name)
+        self.excel_only_var = tk.BooleanVar(value=False)
+        self.main_printer_var = tk.StringVar(value=self.cfg.app.default_printer_name)
+        self.main_ftp_var.set(bool(self.cfg.job.ftp_default_enabled))
+        self.main_print_var.set(bool(self.cfg.job.print_default_enabled))
+        self.preview_zoom_var = tk.DoubleVar(value=float(self.cfg.ui.preview_zoom or 1.0))
 
         self.tools = self._resolve_tools()
         self._build_ui()
@@ -260,26 +278,26 @@ class OwlViewApp:
         self.root.title("OwlView 自動出力ツール")
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        self.root.geometry(safe_geometry(self.cfg.common.window_geometry or "1200x760+80+40", sw, sh))
-        if self.cfg.common.window_maximized:
+        self.root.geometry(safe_geometry(self.cfg.ui.window_geometry or "1200x760+80+40", sw, sh))
+        if self.cfg.ui.window_maximized:
             try:
                 self.root.state("zoomed")
             except tk.TclError:
                 pass
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        main = ttk.Frame(self.root, padding=6)
+        main = ttk.Frame(self.root, padding=4)
         main.pack(fill=tk.BOTH, expand=True)
-        main.columnconfigure(0, weight=3)
-        main.columnconfigure(1, weight=2)
+        main.columnconfigure(0, weight=5)
+        main.columnconfigure(1, weight=4)
         main.rowconfigure(0, weight=1)
 
-        left = ttk.LabelFrame(main, text="A. パート一覧", padding=6)
+        left = ttk.LabelFrame(main, text="A. パート一覧", padding=4)
         left.grid(row=0, column=0, sticky="nsew")
-        right = ttk.LabelFrame(main, text="B. 実行操作", padding=6)
-        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        bottom = ttk.LabelFrame(main, text="C. 実行ログ", padding=6)
-        bottom.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        right = ttk.LabelFrame(main, text="B. プレビュー / 実行", padding=4)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        bottom = ttk.LabelFrame(main, text="C. 実行ログ", padding=4)
+        bottom.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
         main.rowconfigure(1, weight=0)
 
         self._build_parts_area(left)
@@ -329,26 +347,36 @@ class OwlViewApp:
         ttk.Label(b2, textvariable=self.detail_path_var).pack(side=tk.RIGHT)
 
     def _build_main_controls(self, parent: ttk.Frame) -> None:
-        ttk.Checkbutton(parent, text="FTPアップロードする", variable=self.main_ftp_var).pack(anchor="w", pady=2)
-        ttk.Checkbutton(parent, text="印刷する", variable=self.main_print_var).pack(anchor="w", pady=2)
+        preview = ttk.LabelFrame(parent, text="プレビュー", padding=3)
+        preview.pack(fill=tk.BOTH, expand=True)
+        pbar = ttk.Frame(preview)
+        pbar.pack(fill=tk.X, pady=(0, 2))
+        ttk.Button(pbar, text="更新", command=self.refresh_inline_preview).pack(side=tk.LEFT, padx=1)
+        ttk.Button(pbar, text="拡大+", command=lambda: self._change_inline_zoom(1.15)).pack(side=tk.LEFT, padx=1)
+        ttk.Button(pbar, text="縮小-", command=lambda: self._change_inline_zoom(1 / 1.15)).pack(side=tk.LEFT, padx=1)
+        ttk.Button(pbar, text="別窓", command=self.open_preview_window).pack(side=tk.LEFT, padx=1)
+        self.inline_preview_status = tk.StringVar(value="パート選択でプレビュー可能")
+        ttk.Label(pbar, textvariable=self.inline_preview_status).pack(side=tk.RIGHT)
+        self.inline_canvas = tk.Canvas(preview, bg="#202020", height=320)
+        self.inline_canvas.pack(fill=tk.BOTH, expand=True)
 
-        p = ttk.Frame(parent)
-        p.pack(fill=tk.X, pady=4)
-        ttk.Label(p, text="プリンタ").pack(side=tk.LEFT)
-        self.printer_combo = ttk.Combobox(p, textvariable=self.main_printer_var, state="readonly")
-        self.printer_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
-        ttk.Button(p, text="再取得", command=self.reload_printers).pack(side=tk.LEFT)
+        ops = ttk.LabelFrame(parent, text="主操作", padding=3)
+        ops.pack(fill=tk.X, pady=(4, 0))
+        ttk.Checkbutton(ops, text="Excel出力のみ実行", variable=self.excel_only_var).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(ops, text="FTP", variable=self.main_ftp_var).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(ops, text="印刷", variable=self.main_print_var).pack(side=tk.LEFT, padx=2)
+        ttk.Label(ops, text="プリンタ").pack(side=tk.LEFT, padx=(8, 2))
+        self.printer_combo = ttk.Combobox(ops, textvariable=self.main_printer_var, state="readonly", width=18)
+        self.printer_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Button(ops, text="再取得", command=self.reload_printers).pack(side=tk.LEFT, padx=2)
+        for label, cmd in [("個別", self.run_single), ("選択", self.run_selected), ("範囲", self.run_range), ("全件", self.run_all), ("停止", self.stop_run)]:
+            ttk.Button(ops, text=label, command=cmd).pack(side=tk.LEFT, padx=1)
 
-        run = ttk.LabelFrame(parent, text="実行")
-        run.pack(fill=tk.X, pady=6)
-        for label, cmd in [("個別実行", self.run_single), ("選択実行", self.run_selected), ("範囲実行", self.run_range), ("全件実行", self.run_all), ("停止", self.stop_run)]:
-            ttk.Button(run, text=label, command=cmd).pack(side=tk.LEFT, padx=2, pady=4)
-
-        util = ttk.LabelFrame(parent, text="ユーティリティ")
-        util.pack(fill=tk.X, pady=4)
-        ttk.Button(util, text="印刷プレビューを開く", command=self.open_preview_window).pack(side=tk.LEFT, padx=2, pady=4)
-        ttk.Button(util, text="詳細設定", command=self.open_detail_settings).pack(side=tk.LEFT, padx=2, pady=4)
-        ttk.Button(util, text="出力先を開く", command=self.open_output_dir).pack(side=tk.LEFT, padx=2, pady=4)
+        util = ttk.Frame(parent)
+        util.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(util, text="詳細設定", command=self.open_detail_settings).pack(side=tk.LEFT, padx=1)
+        ttk.Button(util, text="環境チェック", command=self.run_environment_check).pack(side=tk.LEFT, padx=1)
+        ttk.Button(util, text="出力先を開く", command=self.open_output_dir).pack(side=tk.LEFT, padx=1)
 
     def _build_log_area(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
@@ -357,6 +385,90 @@ class OwlViewApp:
         self.log_text = tk.Text(parent, height=10)
         self.log_text.pack(fill=tk.BOTH, expand=True)
         ttk.Label(parent, textvariable=self.status_var).pack(anchor="w")
+
+    def _render_part_summary_line(self, summary) -> str:
+        started = summary.started_at.strftime("%H:%M:%S")
+        elapsed = f"{summary.elapsed_sec:.1f}s"
+        error = f" / エラー: {summary.error_summary}" if summary.error_summary else ""
+        return (
+            f"[PART] {summary.part_name} 開始:{started} "
+            f"PDF:{summary.pdf} JPG:{summary.jpg} FTP:{summary.ftp} 印刷:{summary.printing} "
+            f"出力先:{summary.output_dir} 所要:{elapsed}{error}"
+        )
+
+    def _set_preview_progress(self, value: float, text: str) -> None:
+        self.progress_var.set(max(0.0, min(100.0, value)))
+        self.status_var.set(text)
+        self.root.update_idletasks()
+
+    @staticmethod
+    def _pdf_page_count(pdf_path: Path) -> int:
+        try:
+            import fitz  # type: ignore
+        except Exception:
+            return 1
+        doc = fitz.open(pdf_path)
+        try:
+            return max(1, int(doc.page_count))
+        finally:
+            doc.close()
+
+    def _change_inline_zoom(self, ratio: float) -> None:
+        now = float(self.preview_zoom_var.get())
+        self.preview_zoom_var.set(max(0.2, min(4.0, now * ratio)))
+        self._draw_inline_preview()
+
+    def _base_preview_image(self, pdf_path: Path, dpi: int = 160) -> Image.Image:
+        stat = pdf_path.stat()
+        image_key = f"{pdf_path}:{int(stat.st_mtime)}:{dpi}"
+        cached = self.preview_image_cache.get(image_key)
+        if cached is not None:
+            return cached.copy()
+        rendered = render_pdf_first_page_image(pdf_path, dpi=dpi)
+        self.preview_image_cache[image_key] = rendered
+        if len(self.preview_image_cache) > 8:
+            oldest = next(iter(self.preview_image_cache.keys()))
+            self.preview_image_cache.pop(oldest, None)
+        return rendered.copy()
+
+    def _draw_inline_preview(self) -> None:
+        if not self.inline_preview_base:
+            return
+        img = self.inline_preview_base.copy()
+        if self.inline_preview_part:
+            draw = ImageDraw.Draw(img)
+            p = self.inline_preview_part
+            pad_l = int(p.margin_left * 20)
+            pad_r = int(p.margin_right * 20)
+            pad_t = int(p.margin_top * 20)
+            pad_b = int(p.margin_bottom * 20)
+            draw.rectangle((pad_l, pad_t, img.width - pad_r, img.height - pad_b), outline="#d22", width=3)
+        zoom = float(self.preview_zoom_var.get())
+        zw = max(1, int(img.width * zoom))
+        zh = max(1, int(img.height * zoom))
+        img = img.resize((zw, zh), Image.Resampling.LANCZOS)
+        self.inline_preview_photo = ImageTk.PhotoImage(img)
+        self.inline_canvas.delete("all")
+        self.inline_canvas.create_image(8, 8, image=self.inline_preview_photo, anchor="nw")
+
+    def refresh_inline_preview(self) -> None:
+        if not self.selected_ids:
+            self.inline_preview_status.set("パートを選択してください")
+            return
+        part = self.cfg.parts[self.selected_ids[0]]
+        self.inline_preview_part = PartConfig(**asdict(part))
+        try:
+            self._set_preview_progress(10, "プレビューPDF生成を開始")
+            pdf_path = self.generate_preview_pdf(self.inline_preview_part)
+            self._set_preview_progress(70, "PDFを描画しています")
+            self.inline_preview_base = self._base_preview_image(pdf_path)
+            self._draw_inline_preview()
+            self.inline_preview_status.set(f"表示中: {pdf_path.name}")
+            self._set_preview_progress(100, "プレビュー完了")
+        except Exception as exc:
+            self.inline_preview_status.set(f"失敗: {exc}")
+            self._append_stacktrace(exc)
+            self._set_preview_progress(0, "プレビュー失敗")
 
     def _refresh_printer_combo(self) -> None:
         ps = printer_list()
@@ -381,6 +493,8 @@ class OwlViewApp:
         self.selected_ids = [int(i) for i in self.tree.selection()]
         if self.selected_ids:
             self.detail_path_var.set(self.cfg.parts[self.selected_ids[0]].output_dir)
+            if self.cfg.ui.preview_auto_refresh:
+                self.refresh_inline_preview()
 
     def _toggle_on_double_click(self, e) -> None:
         row = self.tree.identify_row(e.y)
@@ -420,6 +534,9 @@ class OwlViewApp:
             "paper_width": tk.DoubleVar(value=p.paper_width),
             "paper_height": tk.DoubleVar(value=p.paper_height),
             "jpg_quality": tk.IntVar(value=p.jpg_quality),
+            "print_copies": tk.IntVar(value=p.print_copies or 1),
+            "enable_inputtable_excel_export": tk.BooleanVar(value=p.enable_inputtable_excel_export),
+            "inputtable_excel_output_dir": tk.StringVar(value=p.inputtable_excel_output_dir),
         }
 
         row = 0
@@ -436,10 +553,21 @@ class OwlViewApp:
         ttk.Combobox(d, textvariable=vars["orientation"], values=["縦", "横"], state="readonly").grid(row=row, column=1, sticky="ew", padx=6)
         row += 1
 
-        for label, key in [("倍率", "scale"), ("印刷範囲", "print_range"), ("余白 上", "margin_top"), ("余白 下", "margin_bottom"), ("余白 左", "margin_left"), ("余白 右", "margin_right"), ("用紙幅", "paper_width"), ("用紙高", "paper_height"), ("JPG品質", "jpg_quality")]:
+        for label, key in [("倍率", "scale"), ("印刷範囲", "print_range"), ("余白 上", "margin_top"), ("余白 下", "margin_bottom"), ("余白 左", "margin_left"), ("余白 右", "margin_right"), ("用紙幅", "paper_width"), ("用紙高", "paper_height"), ("JPG品質", "jpg_quality"), ("印刷部数(0=共通)", "print_copies")]:
             ttk.Label(d, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
             ttk.Entry(d, textvariable=vars[key]).grid(row=row, column=1, sticky="ew", padx=6)
             row += 1
+
+        ttk.Checkbutton(
+            d,
+            text="inputtable からExcelを出力してから report へ進む",
+            variable=vars["enable_inputtable_excel_export"],
+        ).grid(row=row, column=0, columnspan=2, sticky="w", padx=6, pady=3)
+        row += 1
+        ttk.Label(d, text="Excel保存先(yymmdd可)").grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(d, textvariable=vars["inputtable_excel_output_dir"]).grid(row=row, column=1, sticky="ew", padx=6)
+        ttk.Button(d, text="参照", command=lambda: vars["inputtable_excel_output_dir"].set(filedialog.askdirectory() or vars["inputtable_excel_output_dir"].get())).grid(row=row, column=2, padx=6)
+        row += 1
 
         ttk.Checkbutton(d, text="使用する", variable=vars["enabled"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
         ttk.Checkbutton(d, text="実行対象に含める", variable=vars["selected"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
@@ -468,6 +596,9 @@ class OwlViewApp:
             paper_height=float(vars["paper_height"].get()),
             jpg_quality=int(vars["jpg_quality"].get()),
             local_copy_enabled=True,
+            print_copies=int(vars["print_copies"].get()),
+            enable_inputtable_excel_export=bool(vars["enable_inputtable_excel_export"].get()),
+            inputtable_excel_output_dir=vars["inputtable_excel_output_dir"].get().strip(),
         )
         errs = new.validate()
         if errs:
@@ -479,7 +610,8 @@ class OwlViewApp:
     def open_detail_settings(self) -> None:
         c = self.cfg.common
         d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=c.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=c.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings)}
+        dbg = c.debug
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "chromedriver": tk.StringVar(value=c.chromedriver_path), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
 
         outer = ttk.Frame(d, padding=6)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -530,30 +662,49 @@ class OwlViewApp:
         ttk.Label(sec_print, text="自動保存").grid(row=3, column=0, sticky="w", padx=4, pady=2)
         ttk.Checkbutton(sec_print, variable=vars["auto_save"]).grid(row=3, column=1, sticky="w")
 
+        sec_debug = ttk.LabelFrame(body, text="Debug", padding=6); sec_debug.pack(fill=tk.X, pady=(6, 0)); sec_debug.columnconfigure(1, weight=1)
+        ttk.Label(sec_debug, text="Debug有効").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_enabled"]).grid(row=0, column=1, sticky="w")
+        ttk.Label(sec_debug, text="Headless").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_headless"]).grid(row=1, column=1, sticky="w")
+        ttk.Label(sec_debug, text="詳細ログ").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_verbose"]).grid(row=2, column=1, sticky="w")
+        ttk.Label(sec_debug, text="エラー時スクショ").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_shot"]).grid(row=3, column=1, sticky="w")
+        ttk.Label(sec_debug, text="エラー時HTML").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_html"]).grid(row=4, column=1, sticky="w")
+        _add_entry(sec_debug, 5, "待機秒数(override)", "dbg_wait")
+        _add_entry(sec_debug, 6, "入力反映待機秒", "dbg_settle")
+        ttk.Label(sec_debug, text="Report直遷移").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_debug, variable=vars["dbg_report_direct"]).grid(row=7, column=1, sticky="w")
+
         def _save_detail() -> None:
-            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_default_enabled = bool(vars["ftp_default"].get()); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.print_default_enabled = bool(vars["print_default"].get()); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
-            self.store.save(self.cfg); self.tools = self._resolve_tools(); self.main_printer_var.set(c.default_printer_name); self._refresh_printer_combo(); self._log("詳細設定を保存しました"); d.destroy()
+            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.chromedriver_path = vars["chromedriver"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            self.cfg.job.ftp_default_enabled = bool(vars["ftp_default"].get()); self.cfg.job.print_default_enabled = bool(vars["print_default"].get())
+            c.debug.enabled = bool(vars["dbg_enabled"].get()); c.debug.headless = bool(vars["dbg_headless"].get()); c.debug.verbose_log = bool(vars["dbg_verbose"].get()); c.debug.save_screenshot_on_error = bool(vars["dbg_shot"].get()); c.debug.save_html_on_error = bool(vars["dbg_html"].get()); c.debug.selenium_wait_timeout = int(vars["dbg_wait"].get()); c.debug.input_settle_wait = float(vars["dbg_settle"].get()); c.debug.report_direct_navigation = bool(vars["dbg_report_direct"].get())
+            self._invalidate_preview_caches()
+            self.store.save(self.cfg); self.tools = self._resolve_tools(); self.main_printer_var.set(c.default_printer_name); self.main_ftp_var.set(self.cfg.job.ftp_default_enabled); self.main_print_var.set(self.cfg.job.print_default_enabled); self._refresh_printer_combo(); self._log("詳細設定を保存しました"); d.destroy()
         btns = ttk.Frame(d); btns.pack(fill=tk.X, padx=8, pady=8)
         ttk.Button(btns, text="FTP接続テスト", command=self.test_ftp).pack(side=tk.LEFT, padx=2)
         ttk.Button(btns, text="保存", command=_save_detail).pack(side=tk.RIGHT, padx=2)
 
     def add_part(self) -> None:
         p = self._part_dialog();
-        if p: self.cfg.parts.append(p); self._refresh_part_list(); self.auto_save()
+        if p: self.cfg.parts.append(p); self._invalidate_preview_caches(); self._refresh_part_list(); self.auto_save()
 
     def edit_part(self) -> None:
         if not self.selected_ids: return
         idx = self.selected_ids[0]; p = self._part_dialog(self.cfg.parts[idx])
-        if p: self.cfg.parts[idx] = p; self._refresh_part_list(); self.auto_save()
+        if p: self.cfg.parts[idx] = p; self._invalidate_preview_caches(); self._refresh_part_list(); self.auto_save()
 
     def duplicate_selected(self) -> None:
         for idx in self.selected_ids:
             cp = PartConfig(**asdict(self.cfg.parts[idx])); cp.output_name = f"{cp.output_name}_copy"; self.cfg.parts.append(cp)
-        self._refresh_part_list(); self.auto_save()
+        self._invalidate_preview_caches(); self._refresh_part_list(); self.auto_save()
 
     def delete_selected(self) -> None:
         for idx in sorted(self.selected_ids, reverse=True): del self.cfg.parts[idx]
-        self._refresh_part_list(); self.auto_save()
+        self._invalidate_preview_caches(); self._refresh_part_list(); self.auto_save()
 
     def move_selected(self, offset: int) -> None:
         if len(self.selected_ids) != 1: return
@@ -571,6 +722,11 @@ class OwlViewApp:
     def auto_save(self) -> None:
         if self.cfg.common.auto_save_settings: self.store.save(self.cfg)
 
+    def _invalidate_preview_caches(self) -> None:
+        self.preview_cache.clear()
+        self.preview_image_cache.clear()
+        self.inline_preview_base = None
+
     def _apply_main_toggles(self, parts: list[PartConfig]) -> list[PartConfig]:
         cloned: list[PartConfig] = []
         for p in parts:
@@ -582,6 +738,11 @@ class OwlViewApp:
     def _validate_before_run(self, parts: list[PartConfig]) -> list[str]:
         errs: list[str] = []
         if not self.tools.chromedriver.exists(): errs.append(f"ChromeDriver が見つかりません: {self.tools.chromedriver}")
+        if self.excel_only_var.get():
+            if not self.tools.curl.exists() and any(p.enable_inputtable_excel_export or self.excel_only_var.get() for p in parts):
+                # Excel出力本体にはcurl不要。環境警告ノイズを避けるため何もしない。
+                pass
+            return errs
         if self.main_ftp_var.get() and not self.tools.curl.exists(): errs.append(f"curl が見つかりません: {self.tools.curl}")
         if self.main_print_var.get():
             ps = printer_list(); printer = self.main_printer_var.get().strip()
@@ -606,6 +767,7 @@ class OwlViewApp:
             run_print_enabled=self.main_print_var.get(),
             run_printer_name=self.main_printer_var.get(),
             run_copies=max(1, self.cfg.common.default_print_copies),
+            excel_only_mode=self.excel_only_var.get(),
         )
         self.runner.run_async(valid)
 
@@ -634,6 +796,8 @@ class OwlViewApp:
             "report": self.cfg.common.owlview_report_url,
             "xpath": self.cfg.common.xpath_input_box,
             "wait": self.cfg.common.selenium_wait_sec,
+            "wait_debug": self.cfg.common.debug.selenium_wait_timeout,
+            "report_direct_navigation": self.cfg.common.debug.report_direct_navigation,
         }
         cache_key = hashlib.sha1(json.dumps(key_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
         cached = self.preview_cache.get(cache_key)
@@ -641,12 +805,12 @@ class OwlViewApp:
             self._log(f"プレビューキャッシュ使用: {cached.name}")
             return cached
         runner = Runner(self.cfg, self.tools, self.queue)
-        pdf, _ = runner.run_preview_capture(part, preview_dir)
+        pdf, _ = runner.run_preview(part, preview_dir)
         self.preview_temp_files.append(pdf)
         self.preview_cache[cache_key] = pdf
-        for old in self.preview_temp_files[:-3]:
+        for old in self.preview_temp_files[:-5]:
             old.unlink(missing_ok=True)
-        self.preview_temp_files = self.preview_temp_files[-3:]
+        self.preview_temp_files = self.preview_temp_files[-5:]
         return pdf
 
     def open_preview_window(self) -> None:
@@ -676,6 +840,71 @@ class OwlViewApp:
     def reload_printers(self) -> None:
         self._refresh_printer_combo(); ps = printer_list(); messagebox.showinfo("Printer", "\n".join(ps) if ps else "プリンタが見つかりません")
 
+    def run_environment_check(self) -> None:
+        checks: list[tuple[str, str, str]] = []
+
+        def add(name: str, status: str, detail: str) -> None:
+            checks.append((name, status, detail))
+
+        for name, path in [("ChromeDriver", self.tools.chromedriver), ("curl", self.tools.curl), ("SumatraPDF", self.tools.sumatra)]:
+            if path.exists():
+                add(name, "成功", f"検出: {path}")
+            else:
+                add(name, "失敗", f"未検出: 設定値={path}")
+
+        try:
+            ps = printer_list()
+            if ps:
+                add("プリンタ一覧", "成功", f"{len(ps)}件検出 (先頭: {ps[0]})")
+            else:
+                add("プリンタ一覧", "警告", "取得できませんでした (環境依存の可能性)")
+        except Exception as exc:
+            add("プリンタ一覧", "失敗", str(exc))
+
+        add("Settings読み込み", "成功", f"version={self.cfg.version}")
+
+        output_target = ""
+        if self.selected_ids:
+            output_target = self.cfg.parts[self.selected_ids[0]].output_dir
+        output_target = output_target or self.cfg.job.shared_output_dir or str(self.base_dir / "Settings")
+        try:
+            out = Path(output_target)
+            out.mkdir(parents=True, exist_ok=True)
+            probe = out / ".write_test.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            add("出力先書き込み", "成功", str(out))
+        except Exception as exc:
+            add("出力先書き込み", "失敗", f"{output_target} / {exc}")
+
+        try:
+            with urllib.request.urlopen(self.cfg.common.owlview_home_url, timeout=8) as resp:
+                code = getattr(resp, "status", 200)
+            add("OwlView home到達", "成功" if int(code) < 400 else "警告", f"status={code} url={self.cfg.common.owlview_home_url}")
+        except Exception as exc:
+            add("OwlView home到達", "失敗", str(exc))
+
+        if self.main_ftp_var.get():
+            if not self.tools.curl.exists():
+                add("FTP簡易接続", "失敗", f"curl未検出: {self.tools.curl}")
+            else:
+                try:
+                    remote, _ = ftp_test_connection(self.cfg.common, self.tools.curl)
+                    add("FTP簡易接続", "成功", f"remote={remote}")
+                except Exception as exc:
+                    add("FTP簡易接続", "失敗", str(exc))
+        else:
+            add("FTP簡易接続", "警告", "FTPがOFFのため未実施")
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("環境チェック結果")
+        txt = tk.Text(dlg, width=120, height=24)
+        txt.pack(fill=tk.BOTH, expand=True)
+        for name, status, detail in checks:
+            txt.insert(tk.END, f"[{status}] {name}\n  {detail}\n")
+        ttk.Button(dlg, text="閉じる", command=dlg.destroy).pack(side=tk.RIGHT, padx=6, pady=6)
+        self._log("環境チェック完了")
+
     def stop_run(self) -> None:
         if self.runner: self.runner.stop()
 
@@ -691,6 +920,7 @@ class OwlViewApp:
                 if kind == "start": self.progress_var.set(0); self.status_var.set("実行開始")
                 elif kind == "progress": self.progress_var.set(payload["value"] / max(payload["total"], 1) * 100); self.status_var.set(payload["text"])
                 elif kind == "log": self._log(payload["text"])
+                elif kind == "part_summary": self._log(self._render_part_summary_line(payload["summary"]))
                 elif kind == "done": self._show_result_dialog(payload["results"]); self.runner = None
         except Empty:
             pass
@@ -699,11 +929,27 @@ class OwlViewApp:
     def _show_result_dialog(self, results) -> None:
         dlg = tk.Toplevel(self.root); dlg.title("実行結果")
         txt = tk.Text(dlg, width=110, height=22); txt.pack(fill=tk.BOTH, expand=True)
+        failed: list[str] = []
         for r in results:
             txt.insert(tk.END, f"{'OK' if r.success else 'NG'} | {r.part_name} | {r.message}\n")
             for status in r.file_statuses:
                 txt.insert(tk.END, f"  - {status.file_path.name}: ローカル={status.local_copy} / FTP={status.ftp} / 印刷={status.print_status}\n")
             txt.insert(tk.END, "\n")
+            if not r.success:
+                failed.append(r.part_name)
+        txt.insert(
+            tk.END,
+            "\n".join(
+                [
+                    "=== 全体サマリ ===",
+                    f"総件数: {len(results)}",
+                    f"成功件数: {len([r for r in results if r.success])}",
+                    f"失敗件数: {len(failed)}",
+                    f"失敗パート一覧: {', '.join(failed) if failed else '-'}",
+                    f"保存先フォルダ: {self.base_dir}",
+                ]
+            ) + "\n",
+        )
         ttk.Button(dlg, text="閉じる", command=dlg.destroy).pack(side=tk.RIGHT)
 
     def _append_stacktrace(self, exc: Exception) -> None:
@@ -718,10 +964,13 @@ class OwlViewApp:
 
     def on_close(self) -> None:
         self.cfg.common.default_printer_name = self.main_printer_var.get()
-        self.cfg.common.window_maximized = self.root.state() == "zoomed"
+        self.cfg.ui.window_maximized = self.root.state() == "zoomed"
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        self.cfg.common.window_geometry = safe_geometry(self.root.geometry(), sw, sh)
+        self.cfg.ui.window_geometry = safe_geometry(self.root.geometry(), sw, sh)
+        self.cfg.job.ftp_default_enabled = bool(self.main_ftp_var.get())
+        self.cfg.job.print_default_enabled = bool(self.main_print_var.get())
+        self.cfg.ui.preview_zoom = float(self.preview_zoom_var.get())
         self.store.save(self.cfg)
         for p in self.preview_temp_files: p.unlink(missing_ok=True)
         self.root.destroy()
