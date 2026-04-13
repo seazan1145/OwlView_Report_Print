@@ -232,6 +232,7 @@ class OwlViewApp:
         self.selected_ids: list[int] = []
         self.main_ftp_var = tk.BooleanVar(value=True)
         self.main_print_var = tk.BooleanVar(value=True)
+        self.excel_only_var = tk.BooleanVar(value=False)
         self.main_printer_var = tk.StringVar(value=self.cfg.app.default_printer_name)
         self.main_ftp_var.set(bool(self.cfg.job.ftp_default_enabled))
         self.main_print_var.set(bool(self.cfg.job.print_default_enabled))
@@ -361,6 +362,7 @@ class OwlViewApp:
 
         ops = ttk.LabelFrame(parent, text="主操作", padding=3)
         ops.pack(fill=tk.X, pady=(4, 0))
+        ttk.Checkbutton(ops, text="Excel出力のみ実行", variable=self.excel_only_var).pack(side=tk.LEFT, padx=2)
         ttk.Checkbutton(ops, text="FTP", variable=self.main_ftp_var).pack(side=tk.LEFT, padx=2)
         ttk.Checkbutton(ops, text="印刷", variable=self.main_print_var).pack(side=tk.LEFT, padx=2)
         ttk.Label(ops, text="プリンタ").pack(side=tk.LEFT, padx=(8, 2))
@@ -532,6 +534,7 @@ class OwlViewApp:
             "paper_width": tk.DoubleVar(value=p.paper_width),
             "paper_height": tk.DoubleVar(value=p.paper_height),
             "jpg_quality": tk.IntVar(value=p.jpg_quality),
+            "print_copies": tk.IntVar(value=p.print_copies or 1),
             "enable_inputtable_excel_export": tk.BooleanVar(value=p.enable_inputtable_excel_export),
             "inputtable_excel_output_dir": tk.StringVar(value=p.inputtable_excel_output_dir),
         }
@@ -550,7 +553,7 @@ class OwlViewApp:
         ttk.Combobox(d, textvariable=vars["orientation"], values=["縦", "横"], state="readonly").grid(row=row, column=1, sticky="ew", padx=6)
         row += 1
 
-        for label, key in [("倍率", "scale"), ("印刷範囲", "print_range"), ("余白 上", "margin_top"), ("余白 下", "margin_bottom"), ("余白 左", "margin_left"), ("余白 右", "margin_right"), ("用紙幅", "paper_width"), ("用紙高", "paper_height"), ("JPG品質", "jpg_quality")]:
+        for label, key in [("倍率", "scale"), ("印刷範囲", "print_range"), ("余白 上", "margin_top"), ("余白 下", "margin_bottom"), ("余白 左", "margin_left"), ("余白 右", "margin_right"), ("用紙幅", "paper_width"), ("用紙高", "paper_height"), ("JPG品質", "jpg_quality"), ("印刷部数(0=共通)", "print_copies")]:
             ttk.Label(d, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
             ttk.Entry(d, textvariable=vars[key]).grid(row=row, column=1, sticky="ew", padx=6)
             row += 1
@@ -593,6 +596,7 @@ class OwlViewApp:
             paper_height=float(vars["paper_height"].get()),
             jpg_quality=int(vars["jpg_quality"].get()),
             local_copy_enabled=True,
+            print_copies=int(vars["print_copies"].get()),
             enable_inputtable_excel_export=bool(vars["enable_inputtable_excel_export"].get()),
             inputtable_excel_output_dir=vars["inputtable_excel_output_dir"].get().strip(),
         )
@@ -734,6 +738,11 @@ class OwlViewApp:
     def _validate_before_run(self, parts: list[PartConfig]) -> list[str]:
         errs: list[str] = []
         if not self.tools.chromedriver.exists(): errs.append(f"ChromeDriver が見つかりません: {self.tools.chromedriver}")
+        if self.excel_only_var.get():
+            if not self.tools.curl.exists() and any(p.enable_inputtable_excel_export or self.excel_only_var.get() for p in parts):
+                # Excel出力本体にはcurl不要。環境警告ノイズを避けるため何もしない。
+                pass
+            return errs
         if self.main_ftp_var.get() and not self.tools.curl.exists(): errs.append(f"curl が見つかりません: {self.tools.curl}")
         if self.main_print_var.get():
             ps = printer_list(); printer = self.main_printer_var.get().strip()
@@ -758,6 +767,7 @@ class OwlViewApp:
             run_print_enabled=self.main_print_var.get(),
             run_printer_name=self.main_printer_var.get(),
             run_copies=max(1, self.cfg.common.default_print_copies),
+            excel_only_mode=self.excel_only_var.get(),
         )
         self.runner.run_async(valid)
 

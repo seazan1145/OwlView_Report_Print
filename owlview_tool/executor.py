@@ -77,6 +77,7 @@ class Runner:
         run_print_enabled: bool = False,
         run_printer_name: str = "",
         run_copies: int = 1,
+        excel_only_mode: bool = False,
     ):
         self.cfg = cfg
         self.tools = tools
@@ -86,6 +87,7 @@ class Runner:
         self.run_print_enabled = run_print_enabled
         self.run_printer_name = run_printer_name.strip()
         self.run_copies = max(1, int(run_copies))
+        self.excel_only_mode = bool(excel_only_mode)
 
     # ========= UI連携 =========
     def stop(self) -> None:
@@ -556,8 +558,8 @@ return {
             self._log("inputtable前処理: DOMフォールバックは可視範囲のみの可能性あり (partial extraction suspected)")
         return payload
 
-    def _run_inputtable_export_if_enabled(self, driver, part: PartConfig) -> Path | None:
-        if not part.enable_inputtable_excel_export:
+    def _run_inputtable_export_if_enabled(self, driver, part: PartConfig, *, force: bool = False, continue_on_error: bool = True) -> Path | None:
+        if not force and not part.enable_inputtable_excel_export:
             return None
         output_dir = self._resolve_excel_output_dir(part)
         self._log(f"inputtable前処理: 開始 ({part.part_name})")
@@ -598,6 +600,8 @@ return {
             return out_path
         except Exception as exc:
             self._log(f"inputtable前処理失敗(続行): {exc} / current_url={driver.current_url}")
+            if not continue_on_error:
+                raise
             return None
 
     def _wait_ready_state(self, driver, timeout: int, label: str) -> None:
@@ -894,12 +898,23 @@ return {
         summary = PartExecutionSummary(part_name=part.part_name, started_at=datetime.now(), output_dir=part.output_dir)
         try:
             self._emit("progress", {"value": idx - 1, "total": total, "text": f"開始 {tag}"})
+            if self.excel_only_mode:
+                self._run_inputtable_export_if_enabled(driver, part, force=True, continue_on_error=False)
+                summary.pdf = "スキップ(excel only)"
+                summary.jpg = "スキップ(excel only)"
+                summary.ftp = "スキップ(excel only)"
+                summary.printing = "スキップ(excel only)"
+                summary.finished_at = datetime.now()
+                self._emit("progress", {"value": idx, "total": total, "text": f"完了 {tag}"})
+                self._emit("part_summary", {"summary": summary})
+                return JobResult(part.part_name, True, "excel_only_done", [], details=["inputtable Excelのみ実行"], file_statuses=[], summary=summary)
             summary.capture_stage = "OwlView操作"
             outputs, _pdf = self._run_capture_pipeline(driver, part)
             summary.capture_stage = "出力生成"
             summary.pdf = "成功" if any(p.suffix.lower() == ".pdf" for p in outputs) else "未出力"
             summary.jpg = "成功" if any(p.suffix.lower() == ".jpg" for p in outputs) else "未出力"
             self._log(f"使用プリンタ: {self.run_printer_name or '(未設定)'}", verbose=True)
+            part_copies = max(1, int(part.print_copies)) if int(part.print_copies) > 0 else self.run_copies
             for p in outputs:
                 status = FileActionStatus(file_path=p)
                 if part.local_copy_enabled:
@@ -913,11 +928,17 @@ return {
                 else:
                     status.ftp = "スキップ(OFF)"
 
+                original_copies = self.run_copies
+                self.run_copies = part_copies
                 status.print_status = self.print_file(p)
+                self.run_copies = original_copies
                 file_statuses.append(status)
 
             if self.run_print_enabled and _pdf and _pdf.exists() and not any(s.print_status == "成功" for s in file_statuses):
+                original_copies = self.run_copies
+                self.run_copies = part_copies
                 print_status = self.print_file(_pdf)
+                self.run_copies = original_copies
                 file_statuses.append(
                     FileActionStatus(
                         file_path=_pdf,

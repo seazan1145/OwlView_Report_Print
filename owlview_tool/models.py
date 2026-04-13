@@ -28,6 +28,7 @@ class PartConfig:
     print_range: str = ""
     jpg_quality: int = 90
     local_copy_enabled: bool = False
+    print_copies: int = 0
     enable_inputtable_excel_export: bool = False
     inputtable_excel_output_dir: str = ""
     notes: str = ""
@@ -46,6 +47,8 @@ class PartConfig:
             errors.append("jpg_quality は 1〜100 にしてください")
         if self.paper_width <= 0 or self.paper_height <= 0:
             errors.append("用紙サイズは正の値を指定してください")
+        if self.print_copies < 0:
+            errors.append("印刷部数は 0 以上にしてください")
         return errors
 
 
