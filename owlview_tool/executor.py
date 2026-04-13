@@ -842,8 +842,9 @@ return {
         self._log(f"PDF保存成功: {pdf_path}")
         return out_dir, pdf_path
 
-    def export_jpg(self, pdf_path: Path, part: PartConfig) -> Path:
-        jpg_path = pdf_path.with_suffix(".jpg")
+    def export_jpg(self, pdf_path: Path, part: PartConfig, jpg_path: Path | None = None) -> Path:
+        if jpg_path is None:
+            jpg_path = pdf_path.with_suffix(".jpg")
         convert_pdf_first_page_to_jpg(pdf_path, jpg_path, part.jpg_quality)
         self._log(f"JPG変換成功(1ページ目): {jpg_path}")
         return jpg_path
@@ -893,12 +894,13 @@ return {
                 temp_pdf_path = Path(tmp_pdf.name)
             save_pdf(driver, temp_pdf_path, part)
             pdf_path = temp_pdf_path
+            jpg_path = _out_dir / f"{temp_base}.jpg"
         else:
             _out_dir, pdf_path = self.export_pdf(driver, part)
+            jpg_path = None
 
-        jpg_path: Path | None = None
         if part.output_format in {"jpg&pdf", "jpg"}:
-            jpg_path = self.export_jpg(pdf_path, part)
+            jpg_path = self.export_jpg(pdf_path, part, jpg_path=jpg_path)
             outputs.append(jpg_path)
 
         if part.output_format in {"jpg&pdf", "pdf"}:
