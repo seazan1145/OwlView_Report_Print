@@ -33,6 +33,15 @@ class PartConfig:
     inputtable_excel_output_dir: str = ""
     notes: str = ""
 
+    @property
+    def filename_base(self) -> str:
+        # 旧実装互換: output_name へ統合
+        return self.output_name
+
+    @filename_base.setter
+    def filename_base(self, value: str) -> None:
+        self.output_name = value
+
     def resolved_name(self, token_yymmdd: str) -> str:
         return self.output_name.replace("yymmdd", token_yymmdd)
 
