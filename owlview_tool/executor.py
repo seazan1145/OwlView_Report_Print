@@ -594,23 +594,79 @@ return {
 
     def _switch_inputtable_part(self, driver, part_name: str) -> None:
         normalized_part = self._normalize_label(part_name)
-        self._log(f"inputtableパート切替開始: target={normalized_part}")
+        if not self.cfg.common.enable_inputtable_page_part_switch:
+            self._log("inputtableパート切替は無効設定のためスキップ")
+            return
+        self._log(f"inputtableパート切替開始(オプション): target={normalized_part}")
         self._input_part_name(driver, part_name, page="inputtable")
         timeout = self._wait_timeout()
         self._wait_inputtable_grid_ready(driver, timeout)
         self._wait_episode_match(driver, normalized_part, timeout=timeout)
         time.sleep(self._input_settle_wait())
 
+    def _log_inputtable_context(self, driver, target_part: str, *, prefix: str = "inputtable状態") -> None:
+        self._log(
+            f"{prefix}: current_url={driver.current_url} "
+            f"current_episode={self._current_episode_name(driver) or '(empty)'} "
+            f"target_part={target_part} "
+            f"grid_rows={self._grid_row_count(driver)}"
+        )
+
+    def _ensure_inputtable_episode_match(self, driver, target_part: str, *, timeout: int) -> bool:
+        current_episode = self._current_episode_name(driver)
+        if current_episode == target_part:
+            self._log(f"inputtableパート切替不要: already matched ({target_part})")
+            return True
+        self._log(
+            f"inputtable episode確認: mismatch current={current_episode or '(empty)'} target={target_part}"
+        )
+        try:
+            self._wait_episode_match(driver, target_part, timeout=timeout)
+        except RuntimeError:
+            self._log_inputtable_context(driver, target_part, prefix="inputtable episode一致待機失敗")
+            return False
+        return self._current_episode_name(driver) == target_part
+
     def _run_inputtable_export_if_enabled(self, driver, part: PartConfig, *, force: bool = False, continue_on_error: bool = True) -> Path | None:
         if not force and not part.enable_inputtable_excel_export:
             return None
         output_dir = self._resolve_excel_output_dir(part)
         self._log(f"inputtable前処理: 開始 ({part.part_name})")
+        target_part = self._normalize_label(part.part_name)
+        timeout = self._wait_timeout()
         try:
+            self.open_home(driver)
+            self.select_part(driver, part.part_name)
+            self._log(
+                f"homeパート選択結果: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
+            )
+            if self._current_episode_name(driver) != target_part:
+                self._wait_episode_match(driver, target_part, timeout=timeout)
+                self._log(
+                    f"home反映待機後: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
+                )
+
             driver.get(self._inputtable_url())
-            self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
-            self._wait_inputtable_grid_ready(driver, self._wait_timeout())
-            self._switch_inputtable_part(driver, part.part_name)
+            self._wait_ready_state(driver, timeout, "inputtable遷移")
+            self._wait_inputtable_grid_ready(driver, timeout)
+            if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
+                self._log("inputtable episode不一致のためhomeで再選択を実施")
+                self.open_home(driver)
+                self.select_part(driver, part.part_name)
+                self._log(
+                    f"home再選択結果: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
+                )
+                if self._current_episode_name(driver) != target_part:
+                    self._wait_episode_match(driver, target_part, timeout=timeout)
+                driver.get(self._inputtable_url())
+                self._wait_ready_state(driver, timeout, "inputtable再遷移")
+                self._wait_inputtable_grid_ready(driver, timeout)
+                if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
+                    self._switch_inputtable_part(driver, part.part_name)
+                    if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
+                        self._log_inputtable_context(driver, target_part, prefix="inputtable再選択後不一致")
+                        raise RuntimeError(f"inputtable episode不一致が解消されません target={target_part}")
+
             time.sleep(0.3)
             stats = self._inputtable_dom_stats(driver)
             self._log(f"inputtable状態: {stats}")
@@ -629,7 +685,7 @@ return {
                     time.sleep(retry_waits[attempt - 1])
             if not payload:
                 raise RuntimeError(f"inputtable抽出失敗: {last_error}")
-            expected_part = self._normalize_label(part.part_name)
+            expected_part = target_part
             payload_episode = self._normalize_label(str(payload.get("episode", "")))
             strict_mismatch = self.excel_only_mode and self.cfg.common.excel_only_fail_on_episode_mismatch
             mismatch = payload_episode != expected_part
@@ -659,6 +715,7 @@ return {
             return out_path
         except Exception as exc:
             self._log(f"inputtable前処理失敗(続行): {exc} / current_url={driver.current_url}")
+            self._log_inputtable_context(driver, target_part, prefix="inputtable失敗コンテキスト")
             shot, html, snippet = self._capture_debug_artifacts(driver, "inputtable_export_error")
             self._log(f"inputtable debug artifacts: shot={shot} html={html}")
             if snippet:
@@ -839,7 +896,7 @@ return {
     def _wait_episode_match(self, driver, target: str, *, timeout: int) -> None:
         try:
             WebDriverWait(driver, timeout).until(lambda d: self._current_episode_name(d) == target)
-            self._log(f"inputtableパート切替反映確認: episode={target}")
+            self._log(f"episode一致確認: episode={target}")
         except TimeoutException as exc:
             current = self._current_episode_name(driver)
             raise RuntimeError(f"episode反映待機タイムアウト target={target} current={current or '(empty)'}") from exc

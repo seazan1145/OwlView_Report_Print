@@ -85,6 +85,7 @@ class AppCommonConfig:
     xpath_search_ready: str = ""
     excel_only_fail_on_episode_mismatch: bool = True
     inputtable_episode_mismatch_suffix: bool = False
+    enable_inputtable_page_part_switch: bool = False
     selenium_wait_sec: int = 5
     default_output_root: str = ""
     default_local_copy_dir: str = ""
