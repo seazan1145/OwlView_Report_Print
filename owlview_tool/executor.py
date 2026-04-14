@@ -189,8 +189,12 @@ class Runner:
     def _resolve_input_text(part: PartConfig) -> str:
         return (part.input_text or part.part_name).strip()
 
+    @staticmethod
+    def _resolve_project_text(part: PartConfig) -> str:
+        return (part.input_text or "").strip()
+
     def select_part(self, driver, part: PartConfig) -> None:
-        self._input_part_name(driver, self._resolve_input_text(part), page="home", part=part)
+        self._select_home_project_and_episode(driver, part)
 
     def open_report(self, driver) -> None:
         self._navigate_to_report(driver)
@@ -223,8 +227,15 @@ class Runner:
     def _resolve_input_selectors(self, page: str) -> list[SelectorSpec]:
         common = self.cfg.common
         selectors: list[SelectorSpec] = []
-        preferred_xpath = (common.xpath_home_input_box if page == "home" else common.xpath_inputtable_input_box).strip()
-        fallback_xpath = (common.xpath_input_box or "").strip()
+        if page == "home_project":
+            preferred_xpath = (common.xpath_home_project_input_box or common.xpath_input_box).strip()
+            fallback_xpath = (common.xpath_input_box or "").strip()
+        elif page == "home_episode":
+            preferred_xpath = (common.xpath_home_episode_input_box or common.xpath_home_input_box).strip()
+            fallback_xpath = (common.xpath_home_input_box or "").strip()
+        else:
+            preferred_xpath = (common.xpath_inputtable_input_box or "").strip()
+            fallback_xpath = ""
         if preferred_xpath:
             selectors.append(SelectorSpec(name=f"{page}_xpath", kind="xpath", value=preferred_xpath))
         if fallback_xpath and fallback_xpath != preferred_xpath:
@@ -604,13 +615,13 @@ return {
         return payload
 
     def _switch_inputtable_part(self, driver, part: PartConfig) -> None:
-        input_text = self._resolve_input_text(part)
+        input_text = (part.part_name or "").strip()
         normalized_part = self._normalize_label(input_text)
         if not self.cfg.common.enable_inputtable_page_part_switch:
             self._log("inputtableパート切替は無効設定のためスキップ")
             return
         self._log(f"inputtableパート切替開始(オプション): target={normalized_part}")
-        self._input_part_name(driver, input_text, page="inputtable", part=part)
+        self._input_part_name(driver, input_text, page="inputtable")
         timeout = self._wait_timeout()
         self._wait_inputtable_grid_ready(driver, timeout)
         self._wait_episode_match(driver, normalized_part, timeout=timeout)
@@ -644,48 +655,36 @@ return {
             return None
         output_dir = self._resolve_excel_output_dir(part)
         self._log(f"inputtable前処理: 開始 ({part.part_name})")
-        target_part = self._normalize_label(self._resolve_input_text(part))
+        target_part = self._normalize_label(part.part_name)
         timeout = self._wait_timeout()
         try:
             self.open_home(driver)
             self.select_part(driver, part)
-            home_expected = self._resolve_home_expectations(part, self._resolve_input_text(part))
-            home_expected["target_part"] = self._normalize_label(part.part_name)
-            self._log(
-                "homeパート選択結果: "
-                f"project={self._current_project_name(driver) or '(empty)'} "
-                f"episode={self._current_episode_name(driver) or '(empty)'} "
-                f"expected_project={home_expected.get('expected_project') or '(none)'} "
-                f"expected_episode={home_expected.get('expected_episode') or '(none)'} "
-                f"mode={home_expected.get('mode')} "
-                f"current_url={driver.current_url}"
-            )
-            self._wait_home_reflection(driver, home_expected, timeout=timeout)
-            self._log(
-                "home反映待機後: "
-                f"project={self._current_project_name(driver) or '(empty)'} "
-                f"episode={self._current_episode_name(driver) or '(empty)'} "
-                f"current_url={driver.current_url}"
-            )
 
-            driver.get(self._inputtable_url())
-            self._wait_ready_state(driver, timeout, "inputtable遷移")
-            self._wait_inputtable_grid_ready(driver, timeout)
+            try:
+                driver.get(self._inputtable_url())
+                self._wait_ready_state(driver, timeout, "inputtable遷移")
+                self._wait_inputtable_grid_ready(driver, timeout)
+            except Exception:
+                self._log_phase_failure(
+                    driver,
+                    phase="inputtable遷移",
+                    project_input=self._resolve_project_text(part),
+                    episode_input=part.part_name,
+                    xpath=self.cfg.common.xpath_inputtable_input_box,
+                )
+                raise
             if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
+                self._log_phase_failure(
+                    driver,
+                    phase="inputtable episode確認",
+                    project_input=self._resolve_project_text(part),
+                    episode_input=part.part_name,
+                    xpath=self.cfg.common.xpath_inputtable_input_box,
+                )
                 self._log("inputtable episode不一致のためhomeで再選択を実施")
                 self.open_home(driver)
                 self.select_part(driver, part)
-                home_expected["target_part"] = self._normalize_label(part.part_name)
-                self._log(
-                    "home再選択結果: "
-                    f"project={self._current_project_name(driver) or '(empty)'} "
-                    f"episode={self._current_episode_name(driver) or '(empty)'} "
-                    f"expected_project={home_expected.get('expected_project') or '(none)'} "
-                    f"expected_episode={home_expected.get('expected_episode') or '(none)'} "
-                    f"mode={home_expected.get('mode')} "
-                    f"current_url={driver.current_url}"
-                )
-                self._wait_home_reflection(driver, home_expected, timeout=timeout)
                 driver.get(self._inputtable_url())
                 self._wait_ready_state(driver, timeout, "inputtable再遷移")
                 self._wait_inputtable_grid_ready(driver, timeout)
@@ -965,6 +964,57 @@ return {
             current = self._current_episode_name(driver)
             raise RuntimeError(f"episode反映待機タイムアウト target={target} current={current or '(empty)'}") from exc
 
+    def _log_phase_failure(self, driver, *, phase: str, project_input: str, episode_input: str, xpath: str) -> None:
+        shot, html, _snippet = self._capture_debug_artifacts(driver, f"phase_error_{phase.replace(' ', '_')}")
+        self._log(
+            f"{phase}失敗: current_url={driver.current_url} "
+            f"current_project={self._current_project_name(driver) or '(empty)'} "
+            f"current_episode={self._current_episode_name(driver) or '(empty)'} "
+            f"project入力値={project_input or '(empty)'} "
+            f"episode入力値={episode_input or '(empty)'} "
+            f"xpath={xpath or '(empty)'} "
+            f"screenshot={shot} html={html}"
+        )
+
+    def _select_home_project(self, driver, project_name: str, part_name: str) -> None:
+        if not project_name:
+            raise RuntimeError("home project入力が未設定です(part.input_text)")
+        timeout = self._wait_timeout()
+        xpath = (self.cfg.common.xpath_home_project_input_box or self.cfg.common.xpath_input_box).strip()
+        try:
+            self._input_part_name(driver, project_name, page="home_project")
+        except Exception:
+            self._log_phase_failure(driver, phase="home project入力", project_input=project_name, episode_input=part_name, xpath=xpath)
+            raise
+        try:
+            WebDriverWait(driver, timeout).until(lambda d: self._current_project_name(d) == self._normalize_label(project_name))
+            self._log(f"home project反映待機成功: project={self._current_project_name(driver)}")
+        except Exception:
+            self._log_phase_failure(driver, phase="home project反映待機", project_input=project_name, episode_input=part_name, xpath=xpath)
+            raise
+
+    def _select_home_episode(self, driver, part_name: str, project_name: str) -> None:
+        timeout = self._wait_timeout()
+        xpath = (self.cfg.common.xpath_home_episode_input_box or self.cfg.common.xpath_home_input_box).strip()
+        try:
+            self._input_part_name(driver, part_name, page="home_episode")
+        except Exception:
+            self._log_phase_failure(driver, phase="home episode入力", project_input=project_name, episode_input=part_name, xpath=xpath)
+            raise
+        try:
+            self._wait_episode_match(driver, self._normalize_label(part_name), timeout=timeout)
+            self._log(f"home episode反映待機成功: episode={self._current_episode_name(driver)}")
+        except Exception:
+            self._log_phase_failure(driver, phase="home episode反映待機", project_input=project_name, episode_input=part_name, xpath=xpath)
+            raise
+
+    def _select_home_project_and_episode(self, driver, part: PartConfig) -> None:
+        project_name = self._resolve_project_text(part)
+        part_name = (part.part_name or "").strip()
+        self._log(f"home選択開始: project={project_name or '(empty)'} episode={part_name or '(empty)'}")
+        self._select_home_project(driver, project_name, part_name)
+        self._select_home_episode(driver, part_name, project_name)
+
     def _resolve_home_expectations(self, part: PartConfig, input_text: str) -> dict:
         expected_project = self._normalize_label(part.home_expected_project)
         expected_episode = self._normalize_label(part.home_expected_episode)
@@ -1129,33 +1179,18 @@ return {
         except Exception as exc:
             self._log(f"input失敗デバッグ取得失敗: {exc}")
 
-    def _input_part_name(self, driver, part_name: str, *, page: str = "home", part: PartConfig | None = None) -> None:
+    def _input_part_name(self, driver, part_name: str, *, page: str = "inputtable") -> None:
         timeout = self._wait_timeout()
         last_exc: Exception | None = None
         last_selector = ""
         last_selector_kind = "css"
         normalized_part = self._normalize_label(part_name)
-        expected = self._resolve_home_expectations(part or PartConfig(part_name=part_name), part_name)
-        expected["target_part"] = self._normalize_label((part.part_name if part else part_name))
-        phase1_xpath = (self.cfg.common.xpath_input_box or "").strip()
-        phase2_xpath = (self.cfg.common.xpath_home_input_box or "").strip()
-        use_two_phase_home_input = page == "home" and bool(phase1_xpath and phase2_xpath and phase1_xpath != phase2_xpath)
         self._log(f"開始時URL: {driver.current_url}", verbose=True)
         self._log(f"入力対象part_name: {part_name} page={page}")
-        if use_two_phase_home_input:
-            self._log(f"2段階入力モード: 1段目={phase1_xpath} -> 2段目={phase2_xpath}")
         self._wait_ready_state(driver, timeout, f"{page}ページ遷移成功")
 
         for attempt in range(1, 4):
             try:
-                if use_two_phase_home_input:
-                    self._log("2段階入力(1/2): 第1入力欄へ入力して確認", verbose=True)
-                    phase1_locator = (By.XPATH, phase1_xpath)
-                    WebDriverWait(driver, min(timeout, 5)).until(EC.presence_of_element_located(phase1_locator))
-                    phase1_box = driver.find_element(*phase1_locator)
-                    driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", phase1_box)
-                    if not self._write_input_value(driver, phase1_box, part_name, confirm=True):
-                        raise RuntimeError("2段階入力(1/2)の確認に失敗しました")
                 box, last_selector, last_selector_kind = self._find_input(driver, timeout, page=page)
                 before_wait = driver.current_url
                 before_episode = self._current_episode_name(driver)
@@ -1191,9 +1226,7 @@ return false;
                     box.send_keys(Keys.ENTER)
                     self._log("候補完全一致なし: Enter確定", verbose=True)
                 self._brief_wait_after_input(driver, timeout, before_wait, before_episode, before_rows)
-                if page == "home":
-                    self._wait_home_reflection(driver, expected, timeout=timeout)
-                else:
+                if page == "inputtable":
                     self._wait_episode_match(driver, normalized_part, timeout=timeout)
                 return
             except StaleElementReferenceException as exc:
@@ -1212,7 +1245,17 @@ return false;
                 last_exc = exc
                 self._log(f"入力処理失敗 ({attempt}/3): {exc}")
                 debug_selector = last_selector.split(":", 1)[1] if ":" in last_selector else "input[type='text']"
-                self._input_debug_dump(driver, debug_selector, last_selector_kind, expected)
+                self._input_debug_dump(
+                    driver,
+                    debug_selector,
+                    last_selector_kind,
+                    {
+                        "input_value": normalized_part,
+                        "expected_project": "",
+                        "expected_episode": normalized_part if page in {"home_episode", "inputtable"} else "",
+                        "mode": page,
+                    },
+                )
                 try:
                     shot, html, snippet = self._capture_debug_artifacts(driver, "input_part_name_error")
                     self._log(f"input操作失敗時アーティファクト: shot={shot} html={html} current_url={driver.current_url}")
@@ -1263,20 +1306,21 @@ return false;
     def _navigate_to_report(self, driver) -> None:
         common = self.cfg.common
         timeout = self._wait_timeout()
-        if common.debug.report_direct_navigation:
-            self._log(f"report遷移開始URL: {driver.current_url}", verbose=True)
-            driver.get(common.owlview_report_url)
-            self._wait_ready_state(driver, timeout, "reportページ遷移成功")
-        self._wait_url_prefix(driver, timeout, common.owlview_report_url, "reportページ遷移成功")
         try:
+            if common.debug.report_direct_navigation:
+                self._log(f"report遷移開始URL: {driver.current_url}", verbose=True)
+                driver.get(common.owlview_report_url)
+                self._wait_ready_state(driver, timeout, "reportページ遷移成功")
+            self._wait_url_prefix(driver, timeout, common.owlview_report_url, "reportページ遷移成功")
             self._wait_report_marker(driver, timeout)
         except TimeoutException:
-            shot, html, _ = self._capture_debug_artifacts(driver, "report_marker_timeout")
-            self._log(f"report要素待機タイムアウト。最終URL: {driver.current_url}")
-            if shot:
-                self._log(f"timeout時スクリーンショット: {shot}")
-            if html:
-                self._log(f"timeout時HTML: {html}")
+            self._log_phase_failure(
+                driver,
+                phase="report遷移",
+                project_input="",
+                episode_input="",
+                xpath=self.cfg.common.xpath_report_ready,
+            )
             raise
         self._log(f"report遷移成功: {driver.current_url}")
 

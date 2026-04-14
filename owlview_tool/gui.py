@@ -646,13 +646,13 @@ class OwlViewApp:
         }
 
         row = 0
-        for label, key in [("パート名", "part_name"), ("home選択用文字列(空欄=パート名)", "input_text"), ("保存名", "output_name"), ("保存先", "output_dir")]:
+        for label, key in [("パート名", "part_name"), ("home project選択文字列", "input_text"), ("保存名", "output_name"), ("保存先", "output_dir")]:
             ttk.Label(d, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
             ttk.Entry(d, textvariable=vars[key]).grid(row=row, column=1, sticky="ew", padx=6)
             row += 1
         ttk.Label(
             d,
-            text="※ home画面の選択入力文字列です。プロジェクト名で入力する場合は home確認 project の設定を推奨。",
+            text="※ input_text は home 1段目(project) に入力する文字列です。2段目(part)にはパート名を使用します。",
         ).grid(row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 4))
         row += 1
         ttk.Button(d, text="参照", command=lambda: vars["output_dir"].set(filedialog.askdirectory() or vars["output_dir"].get())).grid(row=3, column=2, padx=6)
@@ -740,7 +740,7 @@ class OwlViewApp:
         c = self.cfg.common
         d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
         dbg = c.debug
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "home_xpath": tk.StringVar(value=c.xpath_home_input_box), "inputtable_xpath": tk.StringVar(value=c.xpath_inputtable_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "strict_episode": tk.BooleanVar(value=c.excel_only_fail_on_episode_mismatch), "mismatch_suffix": tk.BooleanVar(value=c.inputtable_episode_mismatch_suffix), "inputtable_switch": tk.BooleanVar(value=c.enable_inputtable_page_part_switch), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "home_project_xpath": tk.StringVar(value=c.xpath_home_project_input_box), "home_episode_xpath": tk.StringVar(value=c.xpath_home_episode_input_box), "inputtable_xpath": tk.StringVar(value=c.xpath_inputtable_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "strict_episode": tk.BooleanVar(value=c.excel_only_fail_on_episode_mismatch), "mismatch_suffix": tk.BooleanVar(value=c.inputtable_episode_mismatch_suffix), "inputtable_switch": tk.BooleanVar(value=c.enable_inputtable_page_part_switch), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
 
         outer = ttk.Frame(d, padding=6)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -760,8 +760,8 @@ class OwlViewApp:
         sec_web = ttk.LabelFrame(body, text="OwlView/Selenium", padding=6); sec_web.pack(fill=tk.X, pady=(0, 6)); sec_web.columnconfigure(1, weight=1)
         _add_entry(sec_web, 0, "Home URL", "home")
         _add_entry(sec_web, 1, "Report URL", "report")
-        _add_entry(sec_web, 2, "入力 XPath", "xpath")
-        _add_entry(sec_web, 3, "Home 入力 XPath", "home_xpath")
+        _add_entry(sec_web, 2, "home project入力 XPath", "home_project_xpath")
+        _add_entry(sec_web, 3, "home part入力 XPath", "home_episode_xpath")
         _add_entry(sec_web, 4, "inputtable 入力 XPath", "inputtable_xpath")
         _add_entry(sec_web, 5, "検索反映待機 XPath(任意)", "search_ready_xpath")
         _add_entry(sec_web, 6, "Report到達要素 XPath(任意)", "report_ready_xpath")
@@ -815,7 +815,7 @@ class OwlViewApp:
         ttk.Checkbutton(sec_debug, variable=vars["dbg_report_direct"]).grid(row=7, column=1, sticky="w")
 
         def _save_detail() -> None:
-            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_home_input_box = vars["home_xpath"].get(); c.xpath_inputtable_input_box = vars["inputtable_xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get()); c.excel_only_fail_on_episode_mismatch = bool(vars["strict_episode"].get()); c.inputtable_episode_mismatch_suffix = bool(vars["mismatch_suffix"].get()); c.enable_inputtable_page_part_switch = bool(vars["inputtable_switch"].get())
+            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_home_project_input_box = vars["home_project_xpath"].get(); c.xpath_home_episode_input_box = vars["home_episode_xpath"].get(); c.xpath_input_box = c.xpath_home_project_input_box; c.xpath_home_input_box = c.xpath_home_episode_input_box; c.xpath_inputtable_input_box = vars["inputtable_xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get()); c.excel_only_fail_on_episode_mismatch = bool(vars["strict_episode"].get()); c.inputtable_episode_mismatch_suffix = bool(vars["mismatch_suffix"].get()); c.enable_inputtable_page_part_switch = bool(vars["inputtable_switch"].get())
             self.cfg.job.ftp_default_enabled = bool(vars["ftp_default"].get()); self.cfg.job.print_default_enabled = bool(vars["print_default"].get())
             c.debug.enabled = bool(vars["dbg_enabled"].get()); c.debug.headless = bool(vars["dbg_headless"].get()); c.debug.verbose_log = bool(vars["dbg_verbose"].get()); c.debug.save_screenshot_on_error = bool(vars["dbg_shot"].get()); c.debug.save_html_on_error = bool(vars["dbg_html"].get()); c.debug.selenium_wait_timeout = int(vars["dbg_wait"].get()); c.debug.input_settle_wait = float(vars["dbg_settle"].get()); c.debug.report_direct_navigation = bool(vars["dbg_report_direct"].get())
             self._invalidate_preview_caches()
@@ -927,8 +927,8 @@ class OwlViewApp:
             "part": asdict(part),
             "home": self.cfg.common.owlview_home_url,
             "report": self.cfg.common.owlview_report_url,
-            "xpath": self.cfg.common.xpath_input_box,
-            "home_xpath": self.cfg.common.xpath_home_input_box,
+            "home_project_xpath": self.cfg.common.xpath_home_project_input_box,
+            "home_episode_xpath": self.cfg.common.xpath_home_episode_input_box,
             "inputtable_xpath": self.cfg.common.xpath_inputtable_input_box,
             "wait": self.cfg.common.selenium_wait_sec,
             "wait_debug": self.cfg.common.debug.selenium_wait_timeout,
