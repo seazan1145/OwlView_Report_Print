@@ -828,6 +828,26 @@ return {
             value,
         )
 
+    def _write_input_value(self, driver, box, value: str, *, confirm: bool = True) -> bool:
+        try:
+            box.click()
+        except Exception:
+            driver.execute_script("arguments[0].focus();", box)
+        try:
+            box.send_keys(Keys.CONTROL, "a")
+            box.send_keys(Keys.BACKSPACE)
+        except Exception:
+            self._set_input_value_js(driver, box, "")
+        if self._read_input_value(box):
+            self._set_input_value_js(driver, box, "")
+        box.send_keys(value)
+        if self._read_input_value(box) != value:
+            self._set_input_value_js(driver, box, value)
+        if not confirm:
+            return True
+        current = self._normalize_label(self._read_input_value(box))
+        return current == self._normalize_label(value)
+
     def _collect_candidate_texts(self, driver) -> list[str]:
         selectors = ["[role='option']", "[class*='option']", "[class*='suggest']", "li"]
         values: list[str] = []
@@ -943,28 +963,32 @@ return {
         last_exc: Exception | None = None
         last_selector = ""
         normalized_part = self._normalize_label(part_name)
+        phase1_xpath = (self.cfg.common.xpath_input_box or "").strip()
+        phase2_xpath = (self.cfg.common.xpath_home_input_box or "").strip()
+        use_two_phase_home_input = page == "home" and bool(phase1_xpath and phase2_xpath and phase1_xpath != phase2_xpath)
         self._log(f"開始時URL: {driver.current_url}", verbose=True)
         self._log(f"入力対象part_name: {part_name} page={page}")
+        if use_two_phase_home_input:
+            self._log(f"2段階入力モード: 1段目={phase1_xpath} -> 2段目={phase2_xpath}")
         self._wait_ready_state(driver, timeout, f"{page}ページ遷移成功")
 
         for attempt in range(1, 4):
             try:
+                if use_two_phase_home_input:
+                    self._log("2段階入力(1/2): 第1入力欄へ入力して確認", verbose=True)
+                    phase1_locator = (By.XPATH, phase1_xpath)
+                    WebDriverWait(driver, min(timeout, 5)).until(EC.presence_of_element_located(phase1_locator))
+                    phase1_box = driver.find_element(*phase1_locator)
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", phase1_box)
+                    if not self._write_input_value(driver, phase1_box, part_name, confirm=True):
+                        raise RuntimeError("2段階入力(1/2)の確認に失敗しました")
                 box, last_selector = self._find_input(driver, timeout, page=page)
                 before_wait = driver.current_url
                 before_episode = self._current_episode_name(driver)
                 before_rows = self._grid_row_count(driver)
                 driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", box)
-                box.click()
-                try:
-                    box.send_keys(Keys.CONTROL, "a")
-                    box.send_keys(Keys.BACKSPACE)
-                except Exception:
-                    self._set_input_value_js(driver, box, "")
-                if self._read_input_value(box):
-                    self._set_input_value_js(driver, box, "")
-                box.send_keys(part_name)
-                if self._read_input_value(box) != part_name:
-                    self._set_input_value_js(driver, box, part_name)
+                if not self._write_input_value(driver, box, part_name, confirm=False):
+                    raise RuntimeError("入力欄への値設定に失敗しました")
                 candidates = self._collect_candidate_texts(driver)
                 self._log(f"候補一覧: {len(candidates)}件 / 先頭10={candidates[:10]} selector={last_selector}", verbose=True)
                 exact = next((c for c in candidates if self._normalize_label(c) == normalized_part), None)
