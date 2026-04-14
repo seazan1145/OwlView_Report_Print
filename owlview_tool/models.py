@@ -68,8 +68,8 @@ class DebugConfig:
     verbose_log: bool = False
     save_screenshot_on_error: bool = True
     save_html_on_error: bool = True
-    selenium_wait_timeout: int = 5
-    input_settle_wait: float = 1.0
+    selenium_wait_timeout: int = 8
+    input_settle_wait: float = 1.5
     report_direct_navigation: bool = True
 
 
@@ -79,8 +79,12 @@ class AppCommonConfig:
     owlview_home_url: str = "https://owlview.sunrise-office.net"
     owlview_report_url: str = "https://owlview.sunrise-office.net/report"
     xpath_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
+    xpath_home_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
+    xpath_inputtable_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
     xpath_report_ready: str = ""
     xpath_search_ready: str = ""
+    excel_only_fail_on_episode_mismatch: bool = True
+    inputtable_episode_mismatch_suffix: bool = False
     selenium_wait_sec: int = 5
     default_output_root: str = ""
     default_local_copy_dir: str = ""
