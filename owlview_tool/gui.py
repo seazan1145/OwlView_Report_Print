@@ -615,6 +615,7 @@ class OwlViewApp:
             "enabled": tk.BooleanVar(value=p.enabled),
             "selected": tk.BooleanVar(value=p.selected),
             "part_name": tk.StringVar(value=p.part_name),
+            "input_text": tk.StringVar(value=p.input_text),
             "output_name": tk.StringVar(value=p.output_name),
             "output_dir": tk.StringVar(value=p.output_dir),
             "format": tk.StringVar(value=FORMAT_LABELS.get(p.output_format, "PDF")),
@@ -634,11 +635,11 @@ class OwlViewApp:
         }
 
         row = 0
-        for label, key in [("パート名", "part_name"), ("保存名", "output_name"), ("保存先", "output_dir")]:
+        for label, key in [("パート名", "part_name"), ("入力文言(空欄=パート名)", "input_text"), ("保存名", "output_name"), ("保存先", "output_dir")]:
             ttk.Label(d, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
             ttk.Entry(d, textvariable=vars[key]).grid(row=row, column=1, sticky="ew", padx=6)
             row += 1
-        ttk.Button(d, text="参照", command=lambda: vars["output_dir"].set(filedialog.askdirectory() or vars["output_dir"].get())).grid(row=2, column=2, padx=6)
+        ttk.Button(d, text="参照", command=lambda: vars["output_dir"].set(filedialog.askdirectory() or vars["output_dir"].get())).grid(row=3, column=2, padx=6)
 
         ttk.Label(d, text="出力形式").grid(row=row, column=0, sticky="w", padx=6, pady=3)
         ttk.Combobox(d, textvariable=vars["format"], values=["PDF", "JPG", "JPGとPDF"], state="readonly").grid(row=row, column=1, sticky="ew", padx=6)
@@ -676,6 +677,7 @@ class OwlViewApp:
             enabled=bool(vars["enabled"].get()),
             selected=bool(vars["selected"].get()),
             part_name=vars["part_name"].get(),
+            input_text=vars["input_text"].get().strip(),
             output_name=vars["output_name"].get(),
             output_dir=vars["output_dir"].get(),
             output_format=FORMAT_FROM_LABEL[vars["format"].get()],
