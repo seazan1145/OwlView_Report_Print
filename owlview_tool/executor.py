@@ -192,15 +192,19 @@ class Runner:
         resolved = raw.replace("yymmdd", token)
         return Path(resolved)
 
-    def _build_excel_filename(self, payload: dict) -> str:
+    @staticmethod
+    def _normalize_label(value: str) -> str:
+        return " ".join(str(value or "").replace("\u00a0", " ").split()).strip()
+
+    def _build_excel_filename(self, part_name: str, payload: dict | None = None) -> str:
         today = datetime.now().strftime("%Y%m%d")
-        project = sanitize_filename(str(payload.get("project", "")))
-        episode = sanitize_filename(str(payload.get("episode", "")))
+        project = sanitize_filename(str((payload or {}).get("project", "")))
+        part = sanitize_filename(self._normalize_label(part_name))
         base = "owlview_export"
         if project:
             base += f"_{project}"
-        if episode:
-            base += f"_{episode}"
+        if part:
+            base += f"_{part}"
         base += f"_{today}"
         return sanitize_filename(base) + ".xlsx"
 
@@ -568,6 +572,29 @@ return {
             self._log("inputtable前処理: DOMフォールバックは可視範囲のみの可能性あり (partial extraction suspected)")
         return payload
 
+    def _switch_inputtable_part(self, driver, part_name: str) -> None:
+        normalized_part = self._normalize_label(part_name)
+        self._log(f"inputtableパート切替開始: target={normalized_part}")
+        self._input_part_name(driver, part_name)
+        timeout = self._wait_timeout()
+        self._wait_inputtable_grid_ready(driver, timeout)
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda d: self._normalize_label(
+                    str(
+                        d.execute_script(
+                            "const el=document.querySelector('.HeaderCommonEpisodeName span:nth-of-type(2)');"
+                            "return el ? (el.textContent || '') : '';"
+                        )
+                    )
+                )
+                == normalized_part
+            )
+            self._log(f"inputtableパート切替反映確認: episode={normalized_part}")
+        except TimeoutException:
+            self._log("inputtableパート切替反映待機タイムアウト: payload抽出時に不一致チェックを実施")
+        time.sleep(self._input_settle_wait())
+
     def _run_inputtable_export_if_enabled(self, driver, part: PartConfig, *, force: bool = False, continue_on_error: bool = True) -> Path | None:
         if not force and not part.enable_inputtable_excel_export:
             return None
@@ -577,6 +604,7 @@ return {
             driver.get(self._inputtable_url())
             self._wait_ready_state(driver, self._wait_timeout(), "inputtable遷移")
             self._wait_inputtable_grid_ready(driver, self._wait_timeout())
+            self._switch_inputtable_part(driver, part.part_name)
             time.sleep(0.3)
             stats = self._inputtable_dom_stats(driver)
             self._log(f"inputtable状態: {stats}")
@@ -595,7 +623,14 @@ return {
                     time.sleep(retry_waits[attempt - 1])
             if not payload:
                 raise RuntimeError(f"inputtable抽出失敗: {last_error}")
-            out_path = output_dir / self._build_excel_filename(payload)
+            expected_part = self._normalize_label(part.part_name)
+            payload_episode = self._normalize_label(str(payload.get("episode", "")))
+            if payload_episode and payload_episode != expected_part:
+                self._log(f"WARNING inputtable episode不一致: part={expected_part} payload.episode={payload_episode}")
+            out_path = output_dir / self._build_excel_filename(part.part_name, payload)
+            self._log(
+                f"inputtable出力検証: part={expected_part} / payload.episode={payload_episode or '(empty)'} / file={out_path.name}"
+            )
             self._log(f"inputtable出力先: {out_path}")
             merged_rows = payload.get("merged_sheet", [])
             max_cols = max((len(r) for r in merged_rows), default=0) if isinstance(merged_rows, list) else 0
