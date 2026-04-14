@@ -23,6 +23,14 @@ FORMAT_LABELS = {"pdf": "PDF", "jpg": "JPG", "jpg&pdf": "JPGとPDF"}
 FORMAT_FROM_LABEL = {v: k for k, v in FORMAT_LABELS.items()}
 ORIENTATION_LABELS = {"portrait": "縦", "landscape": "横"}
 ORIENTATION_FROM_LABEL = {v: k for k, v in ORIENTATION_LABELS.items()}
+HOME_VERIFY_MODE_LABELS = {
+    "auto": "自動",
+    "project_only": "projectのみ",
+    "episode_only": "episodeのみ",
+    "either": "projectまたはepisode",
+    "both": "projectとepisodeの両方",
+}
+HOME_VERIFY_MODE_FROM_LABEL = {v: k for k, v in HOME_VERIFY_MODE_LABELS.items()}
 
 
 def shorten_path(value: str, max_len: int = 48) -> str:
@@ -608,7 +616,7 @@ class OwlViewApp:
     def _part_dialog(self, part: PartConfig | None = None) -> PartConfig | None:
         d = tk.Toplevel(self.root)
         d.title("パート編集")
-        d.geometry("600x560")
+        d.geometry("680x700")
         d.columnconfigure(1, weight=1)
         p = part or PartConfig()
         vars = {
@@ -632,13 +640,21 @@ class OwlViewApp:
             "print_copies": tk.IntVar(value=p.print_copies or 1),
             "enable_inputtable_excel_export": tk.BooleanVar(value=p.enable_inputtable_excel_export),
             "inputtable_excel_output_dir": tk.StringVar(value=p.inputtable_excel_output_dir),
+            "home_expected_project": tk.StringVar(value=p.home_expected_project),
+            "home_expected_episode": tk.StringVar(value=p.home_expected_episode),
+            "home_verify_mode": tk.StringVar(value=HOME_VERIFY_MODE_LABELS.get((p.home_verify_mode or "auto").strip().lower(), "自動")),
         }
 
         row = 0
-        for label, key in [("パート名", "part_name"), ("入力文言(空欄=パート名)", "input_text"), ("保存名", "output_name"), ("保存先", "output_dir")]:
+        for label, key in [("パート名", "part_name"), ("home選択用文字列(空欄=パート名)", "input_text"), ("保存名", "output_name"), ("保存先", "output_dir")]:
             ttk.Label(d, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=3)
             ttk.Entry(d, textvariable=vars[key]).grid(row=row, column=1, sticky="ew", padx=6)
             row += 1
+        ttk.Label(
+            d,
+            text="※ home画面の選択入力文字列です。プロジェクト名で入力する場合は home確認 project の設定を推奨。",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 4))
+        row += 1
         ttk.Button(d, text="参照", command=lambda: vars["output_dir"].set(filedialog.askdirectory() or vars["output_dir"].get())).grid(row=3, column=2, padx=6)
 
         ttk.Label(d, text="出力形式").grid(row=row, column=0, sticky="w", padx=6, pady=3)
@@ -662,6 +678,20 @@ class OwlViewApp:
         ttk.Label(d, text="Excel保存先(yymmdd可)").grid(row=row, column=0, sticky="w", padx=6, pady=3)
         ttk.Entry(d, textvariable=vars["inputtable_excel_output_dir"]).grid(row=row, column=1, sticky="ew", padx=6)
         ttk.Button(d, text="参照", command=lambda: vars["inputtable_excel_output_dir"].set(filedialog.askdirectory() or vars["inputtable_excel_output_dir"].get())).grid(row=row, column=2, padx=6)
+        row += 1
+        ttk.Label(d, text="home確認 project").grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(d, textvariable=vars["home_expected_project"]).grid(row=row, column=1, sticky="ew", padx=6)
+        row += 1
+        ttk.Label(d, text="home確認 episode").grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        ttk.Entry(d, textvariable=vars["home_expected_episode"]).grid(row=row, column=1, sticky="ew", padx=6)
+        row += 1
+        ttk.Label(d, text="home確認モード").grid(row=row, column=0, sticky="w", padx=6, pady=3)
+        ttk.Combobox(
+            d,
+            textvariable=vars["home_verify_mode"],
+            values=list(HOME_VERIFY_MODE_LABELS.values()),
+            state="readonly",
+        ).grid(row=row, column=1, sticky="ew", padx=6)
         row += 1
 
         ttk.Checkbutton(d, text="使用する", variable=vars["enabled"]).grid(row=row, column=1, sticky="w", padx=6); row += 1
@@ -695,6 +725,9 @@ class OwlViewApp:
             print_copies=int(vars["print_copies"].get()),
             enable_inputtable_excel_export=bool(vars["enable_inputtable_excel_export"].get()),
             inputtable_excel_output_dir=vars["inputtable_excel_output_dir"].get().strip(),
+            home_expected_project=vars["home_expected_project"].get().strip(),
+            home_expected_episode=vars["home_expected_episode"].get().strip(),
+            home_verify_mode=HOME_VERIFY_MODE_FROM_LABEL.get(vars["home_verify_mode"].get(), "auto"),
         )
         errs = new.validate()
         if errs:

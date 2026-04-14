@@ -34,7 +34,7 @@ class PartConfig:
     inputtable_excel_output_dir: str = ""
     home_expected_project: str = ""
     home_expected_episode: str = ""
-    home_verify_mode: str = "either"
+    home_verify_mode: str = "auto"
     notes: str = ""
 
     @property
@@ -224,6 +224,12 @@ class AppConfig:
                 p.output_format = "jpg&pdf"
             if p.orientation not in {"portrait", "landscape"}:
                 p.orientation = "portrait"
+            mode = (p.home_verify_mode or "auto").strip().lower()
+            if mode in {"any", "either"}:
+                mode = "either"
+            if mode not in {"auto", "project_only", "episode_only", "either", "both"}:
+                mode = "auto"
+            p.home_verify_mode = mode
             p.local_copy_enabled = bool(p.local_copy_enabled)
             cleaned_parts.append(p)
 

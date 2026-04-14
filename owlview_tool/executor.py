@@ -650,6 +650,7 @@ return {
             self.open_home(driver)
             self.select_part(driver, part)
             home_expected = self._resolve_home_expectations(part, self._resolve_input_text(part))
+            home_expected["target_part"] = self._normalize_label(part.part_name)
             self._log(
                 "homeパート選択結果: "
                 f"project={self._current_project_name(driver) or '(empty)'} "
@@ -674,6 +675,7 @@ return {
                 self._log("inputtable episode不一致のためhomeで再選択を実施")
                 self.open_home(driver)
                 self.select_part(driver, part)
+                home_expected["target_part"] = self._normalize_label(part.part_name)
                 self._log(
                     "home再選択結果: "
                     f"project={self._current_project_name(driver) or '(empty)'} "
@@ -966,51 +968,111 @@ return {
     def _resolve_home_expectations(self, part: PartConfig, input_text: str) -> dict:
         expected_project = self._normalize_label(part.home_expected_project)
         expected_episode = self._normalize_label(part.home_expected_episode)
-        if not expected_project and not expected_episode:
-            expected_episode = self._normalize_label(input_text)
-        mode = (part.home_verify_mode or "either").strip().lower()
-        if mode not in {"either", "any", "both"}:
+        normalized_input = self._normalize_label(input_text)
+        mode = (part.home_verify_mode or "auto").strip().lower()
+        if mode == "any":
             mode = "either"
+        if mode not in {"auto", "project_only", "episode_only", "either", "both"}:
+            mode = "auto"
+        if mode == "auto":
+            if expected_project and expected_episode:
+                resolved_mode = "either"
+            elif expected_project:
+                resolved_mode = "project_only"
+            elif expected_episode:
+                resolved_mode = "episode_only"
+            else:
+                expected_project = normalized_input
+                expected_episode = normalized_input
+                resolved_mode = "either"
+        else:
+            resolved_mode = mode
         return {
-            "input_value": input_text,
+            "input_value": normalized_input,
             "expected_project": expected_project,
             "expected_episode": expected_episode,
-            "mode": "both" if mode == "both" else "either",
+            "mode": resolved_mode,
+            "configured_mode": mode,
         }
+
+    def _evaluate_home_reflection(self, current_project: str, current_episode: str, expected: dict) -> tuple[bool, str]:
+        expected_project = self._normalize_label(expected.get("expected_project", ""))
+        expected_episode = self._normalize_label(expected.get("expected_episode", ""))
+        mode = str(expected.get("mode", "either"))
+        input_value = self._normalize_label(expected.get("input_value", ""))
+        project_ok = bool(expected_project) and current_project == expected_project
+        episode_ok = bool(expected_episode) and current_episode == expected_episode
+
+        if mode == "project_only":
+            return project_ok, "project一致" if project_ok else "project未一致"
+        if mode == "episode_only":
+            return episode_ok, "episode一致" if episode_ok else "episode未一致"
+        if mode == "both":
+            if project_ok and episode_ok:
+                return True, "project/episode一致"
+            missing: list[str] = []
+            if expected_project and not project_ok:
+                missing.append("project未一致")
+            if expected_episode and not episode_ok:
+                missing.append("episode未一致")
+            return False, "・".join(missing) if missing else "both条件未達"
+
+        if project_ok or episode_ok:
+            reasons: list[str] = []
+            if project_ok:
+                reasons.append("project一致")
+            if episode_ok:
+                reasons.append("episode一致")
+            return True, " / ".join(reasons)
+        if expected_project and expected_episode:
+            return False, "project/episodeのどちらも未一致"
+        if expected_project:
+            return False, "project未一致"
+        if expected_episode:
+            return False, "episode未一致"
+        if input_value and (current_project == input_value or current_episode == input_value):
+            return True, "input_text一致(project/episode)"
+        return False, "project/episode どちらにも反映なし"
 
     def _wait_home_reflection(self, driver, expected: dict, *, timeout: int) -> None:
         expected_project = self._normalize_label(expected.get("expected_project", ""))
         expected_episode = self._normalize_label(expected.get("expected_episode", ""))
-        mode = expected.get("mode", "either")
+        mode = str(expected.get("mode", "either"))
 
         def _matched(d) -> bool:
-            project_ok = bool(expected_project) and self._current_project_name(d) == expected_project
-            episode_ok = bool(expected_episode) and self._current_episode_name(d) == expected_episode
-            if mode == "both":
-                return (not expected_project or project_ok) and (not expected_episode or episode_ok)
-            checks = []
-            if expected_project:
-                checks.append(project_ok)
-            if expected_episode:
-                checks.append(episode_ok)
-            return any(checks) if checks else True
+            current_project = self._current_project_name(d)
+            current_episode = self._current_episode_name(d)
+            ok, _ = self._evaluate_home_reflection(current_project, current_episode, expected)
+            return ok
 
         try:
             WebDriverWait(driver, timeout).until(_matched)
+            current_project = self._current_project_name(driver)
+            current_episode = self._current_episode_name(driver)
+            _, reason = self._evaluate_home_reflection(current_project, current_episode, expected)
             self._log(
                 "home反映確認: "
-                f"project={self._current_project_name(driver) or '(empty)'} "
-                f"episode={self._current_episode_name(driver) or '(empty)'} "
+                f"project={current_project or '(empty)'} "
+                f"episode={current_episode or '(empty)'} "
                 f"expected_project={expected_project or '(none)'} "
                 f"expected_episode={expected_episode or '(none)'} "
-                f"mode={mode}"
+                f"mode={mode} "
+                f"summary={reason}"
             )
         except TimeoutException as exc:
+            current_project = self._current_project_name(driver)
+            current_episode = self._current_episode_name(driver)
+            _, reason = self._evaluate_home_reflection(current_project, current_episode, expected)
             raise RuntimeError(
-                "home反映待機タイムアウト "
-                f"mode={mode} "
-                f"expected_project={expected_project or '(none)'} current_project={self._current_project_name(driver) or '(empty)'} "
-                f"expected_episode={expected_episode or '(none)'} current_episode={self._current_episode_name(driver) or '(empty)'}"
+                "home確認失敗: "
+                f"{reason} / "
+                f"input_text={expected.get('input_value') or '(empty)'} "
+                f"target_part={expected.get('target_part') or '(unknown)'} "
+                f"home_expected_project={expected_project or '(none)'} "
+                f"home_expected_episode={expected_episode or '(none)'} "
+                f"home_verify_mode={mode} "
+                f"current_project={current_project or '(empty)'} "
+                f"current_episode={current_episode or '(empty)'}"
             ) from exc
 
     def _input_debug_dump(self, driver, selector: str, selector_kind: str, expected: dict) -> None:
@@ -1074,6 +1136,7 @@ return {
         last_selector_kind = "css"
         normalized_part = self._normalize_label(part_name)
         expected = self._resolve_home_expectations(part or PartConfig(part_name=part_name), part_name)
+        expected["target_part"] = self._normalize_label((part.part_name if part else part_name))
         phase1_xpath = (self.cfg.common.xpath_input_box or "").strip()
         phase2_xpath = (self.cfg.common.xpath_home_input_box or "").strip()
         use_two_phase_home_input = page == "home" and bool(phase1_xpath and phase2_xpath and phase1_xpath != phase2_xpath)
