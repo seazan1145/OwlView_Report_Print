@@ -32,6 +32,9 @@ class PartConfig:
     print_copies: int = 0
     enable_inputtable_excel_export: bool = False
     inputtable_excel_output_dir: str = ""
+    home_expected_project: str = ""
+    home_expected_episode: str = ""
+    home_verify_mode: str = "either"
     notes: str = ""
 
     @property

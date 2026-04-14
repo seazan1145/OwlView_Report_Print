@@ -60,6 +60,13 @@ class JobResult:
     summary: PartExecutionSummary | None = None
 
 
+@dataclass(frozen=True)
+class SelectorSpec:
+    name: str
+    kind: str  # xpath | css
+    value: str
+
+
 class Runner:
     REPORT_READY_SELECTORS = [
         "main",
@@ -183,7 +190,7 @@ class Runner:
         return (part.input_text or part.part_name).strip()
 
     def select_part(self, driver, part: PartConfig) -> None:
-        self._input_part_name(driver, self._resolve_input_text(part), page="home")
+        self._input_part_name(driver, self._resolve_input_text(part), page="home", part=part)
 
     def open_report(self, driver) -> None:
         self._navigate_to_report(driver)
@@ -213,21 +220,21 @@ class Runner:
         base += f"_{today}"
         return sanitize_filename(base) + ".xlsx"
 
-    def _resolve_input_selectors(self, page: str) -> list[tuple[str, str]]:
+    def _resolve_input_selectors(self, page: str) -> list[SelectorSpec]:
         common = self.cfg.common
-        selectors: list[tuple[str, str]] = []
+        selectors: list[SelectorSpec] = []
         preferred_xpath = (common.xpath_home_input_box if page == "home" else common.xpath_inputtable_input_box).strip()
         fallback_xpath = (common.xpath_input_box or "").strip()
         if preferred_xpath:
-            selectors.append((f"{page}_xpath", preferred_xpath))
+            selectors.append(SelectorSpec(name=f"{page}_xpath", kind="xpath", value=preferred_xpath))
         if fallback_xpath and fallback_xpath != preferred_xpath:
-            selectors.append(("legacy_xpath_input_box", fallback_xpath))
+            selectors.append(SelectorSpec(name="legacy_xpath_input_box", kind="xpath", value=fallback_xpath))
         selectors.extend(
             [
-                ("css_header_episode_input", ".HeaderCommonEpisodeName input"),
-                ("css_header_input", "header input[type='text']"),
-                ("css_input_text", "input[type='text']"),
-                ("css_input_no_type", "input:not([type])"),
+                SelectorSpec(name="css_header_episode_input", kind="css", value=".HeaderCommonEpisodeName input"),
+                SelectorSpec(name="css_header_input", kind="css", value="header input[type='text']"),
+                SelectorSpec(name="css_input_text", kind="css", value="input[type='text']"),
+                SelectorSpec(name="css_input_no_type", kind="css", value="input:not([type])"),
             ]
         )
         return selectors
@@ -603,7 +610,7 @@ return {
             self._log("inputtableパート切替は無効設定のためスキップ")
             return
         self._log(f"inputtableパート切替開始(オプション): target={normalized_part}")
-        self._input_part_name(driver, input_text, page="inputtable")
+        self._input_part_name(driver, input_text, page="inputtable", part=part)
         timeout = self._wait_timeout()
         self._wait_inputtable_grid_ready(driver, timeout)
         self._wait_episode_match(driver, normalized_part, timeout=timeout)
@@ -642,14 +649,23 @@ return {
         try:
             self.open_home(driver)
             self.select_part(driver, part)
+            home_expected = self._resolve_home_expectations(part, self._resolve_input_text(part))
             self._log(
-                f"homeパート選択結果: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
+                "homeパート選択結果: "
+                f"project={self._current_project_name(driver) or '(empty)'} "
+                f"episode={self._current_episode_name(driver) or '(empty)'} "
+                f"expected_project={home_expected.get('expected_project') or '(none)'} "
+                f"expected_episode={home_expected.get('expected_episode') or '(none)'} "
+                f"mode={home_expected.get('mode')} "
+                f"current_url={driver.current_url}"
             )
-            if self._current_episode_name(driver) != target_part:
-                self._wait_episode_match(driver, target_part, timeout=timeout)
-                self._log(
-                    f"home反映待機後: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
-                )
+            self._wait_home_reflection(driver, home_expected, timeout=timeout)
+            self._log(
+                "home反映待機後: "
+                f"project={self._current_project_name(driver) or '(empty)'} "
+                f"episode={self._current_episode_name(driver) or '(empty)'} "
+                f"current_url={driver.current_url}"
+            )
 
             driver.get(self._inputtable_url())
             self._wait_ready_state(driver, timeout, "inputtable遷移")
@@ -659,10 +675,15 @@ return {
                 self.open_home(driver)
                 self.select_part(driver, part)
                 self._log(
-                    f"home再選択結果: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
+                    "home再選択結果: "
+                    f"project={self._current_project_name(driver) or '(empty)'} "
+                    f"episode={self._current_episode_name(driver) or '(empty)'} "
+                    f"expected_project={home_expected.get('expected_project') or '(none)'} "
+                    f"expected_episode={home_expected.get('expected_episode') or '(none)'} "
+                    f"mode={home_expected.get('mode')} "
+                    f"current_url={driver.current_url}"
                 )
-                if self._current_episode_name(driver) != target_part:
-                    self._wait_episode_match(driver, target_part, timeout=timeout)
+                self._wait_home_reflection(driver, home_expected, timeout=timeout)
                 driver.get(self._inputtable_url())
                 self._wait_ready_state(driver, timeout, "inputtable再遷移")
                 self._wait_inputtable_grid_ready(driver, timeout)
@@ -788,26 +809,29 @@ return {
                 self._log(f"page_source抜粋: {snippet}", verbose=True)
             raise
 
+    def _find_element_by_selector(self, driver, spec: SelectorSpec, timeout: int, *, require_visible: bool = True):
+        locator = (By.XPATH, spec.value) if spec.kind == "xpath" else (By.CSS_SELECTOR, spec.value)
+        wait = WebDriverWait(driver, timeout)
+        if require_visible:
+            wait.until(EC.visibility_of_element_located(locator))
+        else:
+            wait.until(EC.presence_of_element_located(locator))
+        el = driver.find_element(*locator)
+        if require_visible and (not el.is_displayed() or not el.is_enabled()):
+            raise TimeoutException(f"要素は取得したが操作不可です: {spec.name}")
+        return el
+
     def _find_input(self, driver, timeout: int, *, page: str):
         selected = ""
-        for name, selector in self._resolve_input_selectors(page):
-            self._log(f"入力欄探索: page={page} selector={name}:{selector}", verbose=True)
+        for spec in self._resolve_input_selectors(page):
+            self._log(f"入力欄探索: page={page} selector={spec.name}:{spec.value} kind={spec.kind}", verbose=True)
             try:
-                if "xpath" in name:
-                    locator = (By.XPATH, selector)
-                    WebDriverWait(driver, min(timeout, 3)).until(EC.presence_of_element_located(locator))
-                    el = driver.find_element(*locator)
-                else:
-                    candidates = driver.find_elements(By.CSS_SELECTOR, selector)
-                    visible = [el for el in candidates if el.is_displayed() and el.is_enabled()]
-                    if not visible:
-                        continue
-                    el = visible[0]
+                el = self._find_element_by_selector(driver, spec, min(timeout, 3), require_visible=True)
                 driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", el)
-                selected = f"{name}:{selector}"
-                return el, selected
+                selected = f"{spec.name}:{spec.value}"
+                return el, selected, spec.kind
             except Exception as exc:
-                self._log(f"入力欄探索失敗: {name} reason={exc}", verbose=True)
+                self._log(f"入力欄探索失敗: {spec.name} kind={spec.kind} reason={exc}", verbose=True)
                 continue
         raise TimeoutException(f"入力欄が見つかりません page={page} last_selector={selected or '(none)'}")
 
@@ -906,6 +930,19 @@ return {
         except Exception:
             return ""
 
+    def _current_project_name(self, driver) -> str:
+        try:
+            return self._normalize_label(
+                str(
+                    driver.execute_script(
+                        "const el=document.querySelector('.HeaderCommonProjectName span:nth-of-type(2)');"
+                        "return el ? (el.textContent || '') : '';"
+                    )
+                )
+            )
+        except Exception:
+            return ""
+
     def _grid_row_count(self, driver) -> int:
         try:
             return int(
@@ -926,17 +963,78 @@ return {
             current = self._current_episode_name(driver)
             raise RuntimeError(f"episode反映待機タイムアウト target={target} current={current or '(empty)'}") from exc
 
-    def _input_debug_dump(self, driver, selector: str) -> None:
+    def _resolve_home_expectations(self, part: PartConfig, input_text: str) -> dict:
+        expected_project = self._normalize_label(part.home_expected_project)
+        expected_episode = self._normalize_label(part.home_expected_episode)
+        if not expected_project and not expected_episode:
+            expected_episode = self._normalize_label(input_text)
+        mode = (part.home_verify_mode or "either").strip().lower()
+        if mode not in {"either", "any", "both"}:
+            mode = "either"
+        return {
+            "input_value": input_text,
+            "expected_project": expected_project,
+            "expected_episode": expected_episode,
+            "mode": "both" if mode == "both" else "either",
+        }
+
+    def _wait_home_reflection(self, driver, expected: dict, *, timeout: int) -> None:
+        expected_project = self._normalize_label(expected.get("expected_project", ""))
+        expected_episode = self._normalize_label(expected.get("expected_episode", ""))
+        mode = expected.get("mode", "either")
+
+        def _matched(d) -> bool:
+            project_ok = bool(expected_project) and self._current_project_name(d) == expected_project
+            episode_ok = bool(expected_episode) and self._current_episode_name(d) == expected_episode
+            if mode == "both":
+                return (not expected_project or project_ok) and (not expected_episode or episode_ok)
+            checks = []
+            if expected_project:
+                checks.append(project_ok)
+            if expected_episode:
+                checks.append(episode_ok)
+            return any(checks) if checks else True
+
+        try:
+            WebDriverWait(driver, timeout).until(_matched)
+            self._log(
+                "home反映確認: "
+                f"project={self._current_project_name(driver) or '(empty)'} "
+                f"episode={self._current_episode_name(driver) or '(empty)'} "
+                f"expected_project={expected_project or '(none)'} "
+                f"expected_episode={expected_episode or '(none)'} "
+                f"mode={mode}"
+            )
+        except TimeoutException as exc:
+            raise RuntimeError(
+                "home反映待機タイムアウト "
+                f"mode={mode} "
+                f"expected_project={expected_project or '(none)'} current_project={self._current_project_name(driver) or '(empty)'} "
+                f"expected_episode={expected_episode or '(none)'} current_episode={self._current_episode_name(driver) or '(empty)'}"
+            ) from exc
+
+    def _input_debug_dump(self, driver, selector: str, selector_kind: str, expected: dict) -> None:
         try:
             detail = driver.execute_script(
                 """
-const selector = arguments[0];
+const kind = arguments[0];
+const selector = arguments[1];
 const active = document.activeElement;
-const target = document.querySelector(selector);
+const target = (() => {
+  if (kind === 'xpath') {
+    const result = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    return result.singleNodeValue || null;
+  }
+  return document.querySelector(selector);
+})();
 const opts = Array.from(document.querySelectorAll("[role='option'], li, [class*='option'], [class*='suggest']"))
   .map(el => (el.textContent || '').trim())
   .filter(Boolean)
   .slice(0, 10);
+const project = (() => {
+  const el = document.querySelector('.HeaderCommonProjectName span:nth-of-type(2)');
+  return el ? (el.textContent || '').trim() : '';
+})();
 const episode = (() => {
   const el = document.querySelector('.HeaderCommonEpisodeName span:nth-of-type(2)');
   return el ? (el.textContent || '').trim() : '';
@@ -945,24 +1043,37 @@ return {
   active: active ? { tag: active.tagName, id: active.id || '', className: active.className || '' } : null,
   input_outer_html: target ? target.outerHTML : '',
   options: opts,
+  project,
   episode,
 };
 """,
+                selector_kind,
                 selector,
             )
-            self._log(f"input失敗デバッグ current_url={driver.current_url} selector={selector}")
+            self._log(f"input失敗デバッグ current_url={driver.current_url}")
+            self._log(f"input失敗デバッグ selector={selector} kind={selector_kind}")
             self._log(f"input失敗デバッグ activeElement={detail.get('active')}")
+            self._log(f"input失敗デバッグ project={detail.get('project')}")
             self._log(f"input失敗デバッグ episode={detail.get('episode')}")
+            self._log(f"input失敗デバッグ input_value={expected.get('input_value', '')}")
+            self._log(
+                "input失敗デバッグ expected="
+                f"project:{expected.get('expected_project') or '(none)'} "
+                f"episode:{expected.get('expected_episode') or '(none)'} "
+                f"mode:{expected.get('mode', 'either')}"
+            )
             self._log(f"input失敗デバッグ options={detail.get('options')}")
             self._log(f"input失敗デバッグ input_outer_html={detail.get('input_outer_html')}", verbose=True)
         except Exception as exc:
             self._log(f"input失敗デバッグ取得失敗: {exc}")
 
-    def _input_part_name(self, driver, part_name: str, *, page: str = "home") -> None:
+    def _input_part_name(self, driver, part_name: str, *, page: str = "home", part: PartConfig | None = None) -> None:
         timeout = self._wait_timeout()
         last_exc: Exception | None = None
         last_selector = ""
+        last_selector_kind = "css"
         normalized_part = self._normalize_label(part_name)
+        expected = self._resolve_home_expectations(part or PartConfig(part_name=part_name), part_name)
         phase1_xpath = (self.cfg.common.xpath_input_box or "").strip()
         phase2_xpath = (self.cfg.common.xpath_home_input_box or "").strip()
         use_two_phase_home_input = page == "home" and bool(phase1_xpath and phase2_xpath and phase1_xpath != phase2_xpath)
@@ -982,7 +1093,7 @@ return {
                     driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", phase1_box)
                     if not self._write_input_value(driver, phase1_box, part_name, confirm=True):
                         raise RuntimeError("2段階入力(1/2)の確認に失敗しました")
-                box, last_selector = self._find_input(driver, timeout, page=page)
+                box, last_selector, last_selector_kind = self._find_input(driver, timeout, page=page)
                 before_wait = driver.current_url
                 before_episode = self._current_episode_name(driver)
                 before_rows = self._grid_row_count(driver)
@@ -1017,7 +1128,10 @@ return false;
                     box.send_keys(Keys.ENTER)
                     self._log("候補完全一致なし: Enter確定", verbose=True)
                 self._brief_wait_after_input(driver, timeout, before_wait, before_episode, before_rows)
-                self._wait_episode_match(driver, normalized_part, timeout=timeout)
+                if page == "home":
+                    self._wait_home_reflection(driver, expected, timeout=timeout)
+                else:
+                    self._wait_episode_match(driver, normalized_part, timeout=timeout)
                 return
             except StaleElementReferenceException as exc:
                 last_exc = exc
@@ -1035,11 +1149,14 @@ return false;
                 last_exc = exc
                 self._log(f"入力処理失敗 ({attempt}/3): {exc}")
                 debug_selector = last_selector.split(":", 1)[1] if ":" in last_selector else "input[type='text']"
-                self._input_debug_dump(driver, debug_selector)
-                shot, html, snippet = self._capture_debug_artifacts(driver, "input_part_name_error")
-                self._log(f"input操作失敗時アーティファクト: shot={shot} html={html}")
-                if snippet:
-                    self._log(f"input操作失敗page_source抜粋: {snippet}", verbose=True)
+                self._input_debug_dump(driver, debug_selector, last_selector_kind, expected)
+                try:
+                    shot, html, snippet = self._capture_debug_artifacts(driver, "input_part_name_error")
+                    self._log(f"input操作失敗時アーティファクト: shot={shot} html={html} current_url={driver.current_url}")
+                    if snippet:
+                        self._log(f"input操作失敗page_source抜粋: {snippet}", verbose=True)
+                except Exception as debug_exc:
+                    self._log(f"input操作失敗時アーティファクト取得失敗: {debug_exc}")
                 time.sleep(0.2)
 
         raise RuntimeError(f"入力欄操作に失敗しました: {last_exc} selector={last_selector or '(unknown)'}")
