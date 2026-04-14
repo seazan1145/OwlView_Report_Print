@@ -715,6 +715,23 @@ return {
         WebDriverWait(driver, timeout).until(EC.element_to_be_clickable(locator))
         return driver.find_element(*locator)
 
+    @staticmethod
+    def _read_input_value(box) -> str:
+        return ((box.get_attribute("value") or box.text or "").strip())
+
+    def _set_input_value_js(self, driver, box, value: str) -> None:
+        driver.execute_script(
+            "const el=arguments[0],v=arguments[1];"
+            "el.focus();"
+            "const proto=Object.getPrototypeOf(el);"
+            "const desc=Object.getOwnPropertyDescriptor(proto,'value');"
+            "if(desc && typeof desc.set==='function'){desc.set.call(el,v);}else{el.value=v;}"
+            "el.dispatchEvent(new Event('input',{bubbles:true}));"
+            "el.dispatchEvent(new Event('change',{bubbles:true}));",
+            box,
+            value,
+        )
+
     def _collect_candidate_texts(self, driver) -> list[str]:
         selectors = ["[role='option']", "[class*='option']", "[class*='suggest']", "li"]
         values: list[str] = []
@@ -761,53 +778,40 @@ return {
         self._log(f"入力XPath: {self.cfg.common.xpath_input_box}", verbose=True)
         self._log(f"入力対象part_name: {part_name}")
         self._wait_ready_state(driver, timeout, "homeページ遷移成功")
+
         for attempt in range(1, 4):
             try:
                 box = self._find_input(driver, timeout)
                 self._log("XPath要素取得成功", verbose=True)
-                box.clear()
-                box.send_keys(part_name)
-                current = (box.get_attribute("value") or "").strip()
-                if current == part_name:
-                    candidates = self._collect_candidate_texts(driver)
-                    self._log(f"候補一覧: {len(candidates)}件 / 先頭={candidates[:5]}", verbose=True)
-                    before_wait = driver.current_url
-                    self._brief_wait_after_input(driver, timeout, before_wait)
-                    return
 
-                box = self._find_input(driver, timeout)
-                box.click()
-                box.clear()
-                box.send_keys(part_name)
-                current = (box.get_attribute("value") or "").strip()
-                if current == part_name:
-                    before_wait = driver.current_url
-                    self._brief_wait_after_input(driver, timeout, before_wait)
-                    return
+                strategies = [
+                    ("send_keys", lambda el: (el.click(), el.clear(), el.send_keys(part_name))),
+                    ("send_keys_after_focus", lambda el: (driver.execute_script("arguments[0].focus();", el), el.clear(), el.send_keys(part_name))),
+                    ("js_value_set", lambda el: self._set_input_value_js(driver, el, part_name)),
+                ]
 
-                box = self._find_input(driver, timeout)
-                driver.execute_script(
-                    "arguments[0].value=arguments[1];"
-                    "arguments[0].dispatchEvent(new Event('input',{bubbles:true}));"
-                    "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",
-                    box,
-                    part_name,
-                )
-                current = (box.get_attribute("value") or "").strip()
-                if current == part_name:
-                    before_wait = driver.current_url
-                    self._brief_wait_after_input(driver, timeout, before_wait)
-                    return
+                for strategy_name, setter in strategies:
+                    box = self._find_input(driver, timeout)
+                    setter(box)
+                    current = self._read_input_value(box)
+                    self._log(f"入力戦略={strategy_name} / value='{current}'", verbose=True)
+                    if current == part_name:
+                        candidates = self._collect_candidate_texts(driver)
+                        self._log(f"候補一覧: {len(candidates)}件 / 先頭={candidates[:5]}", verbose=True)
+                        before_wait = driver.current_url
+                        self._brief_wait_after_input(driver, timeout, before_wait)
+                        return
 
                 raise RuntimeError("取得は成功したが値が入らなかった")
             except StaleElementReferenceException as exc:
                 last_exc = exc
                 self._log(f"stale element 発生。再取得して再試行 ({attempt}/3)", verbose=True)
                 time.sleep(0.2)
-            except (TimeoutException, RuntimeError) as exc:
+            except (TimeoutException, RuntimeError, WebDriverException) as exc:
                 last_exc = exc
                 self._log(f"入力処理失敗 ({attempt}/3): {exc}")
                 time.sleep(0.2)
+
         raise RuntimeError(f"入力欄操作に失敗しました: {last_exc}")
 
     def _wait_report_marker(self, driver, timeout: int) -> None:
