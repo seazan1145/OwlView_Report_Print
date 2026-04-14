@@ -82,8 +82,10 @@ class AppCommonConfig:
     # アプリ共通設定
     owlview_home_url: str = "https://owlview.sunrise-office.net"
     owlview_report_url: str = "https://owlview.sunrise-office.net/report"
-    xpath_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
+    xpath_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[1]/div/div[1]/input"
     xpath_home_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
+    xpath_home_project_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[1]/div/div[1]/input"
+    xpath_home_episode_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
     xpath_inputtable_input_box: str = "/html/body/div[1]/div[2]/div/div[2]/div[1]/div[2]/div/div[1]/input"
     xpath_report_ready: str = ""
     xpath_search_ready: str = ""
@@ -206,6 +208,11 @@ class AppConfig:
         debug = DebugConfig(**{k: v for k, v in raw_debug.items() if k in debug_fields})
 
         app_values = {k: v for k, v in raw_app.items() if k in app_fields and k != "debug"}
+        # 旧設定互換: 旧キーから新キーへ補完
+        if "xpath_home_project_input_box" not in app_values:
+            app_values["xpath_home_project_input_box"] = raw_app.get("xpath_input_box", AppCommonConfig().xpath_home_project_input_box)
+        if "xpath_home_episode_input_box" not in app_values:
+            app_values["xpath_home_episode_input_box"] = raw_app.get("xpath_home_input_box", AppCommonConfig().xpath_home_episode_input_box)
         app = AppCommonConfig(**app_values)
         app.debug = debug
 
