@@ -239,6 +239,7 @@ class OwlViewApp:
         self.preview_zoom_var = tk.DoubleVar(value=float(self.cfg.ui.preview_zoom or 1.0))
 
         self.tools = self._resolve_tools()
+        self._configure_styles()
         self._build_ui()
         self._refresh_printer_combo()
         self._refresh_part_list()
@@ -271,6 +272,68 @@ class OwlViewApp:
             "以下の実行ファイルが見つかりません。\n"
             "Data同梱なし構成では、詳細設定の明示パスまたはPATHに配置してください。\n\n"
             + "\n".join(missing),
+        )
+
+    def _configure_styles(self) -> None:
+        self.style = ttk.Style(self.root)
+        try:
+            self.style.theme_use("vista")
+        except Exception:
+            pass
+        self.style.configure("Primary.TButton", padding=(10, 6), foreground="#ffffff", background="#0b63ce")
+        self.style.map(
+            "Primary.TButton",
+            background=[("active", "#1d74df"), ("pressed", "#0954af"), ("disabled", "#b4c6df")],
+            foreground=[("disabled", "#f4f7fb")],
+        )
+        self.style.configure("Success.TButton", padding=(10, 6), foreground="#ffffff", background="#2e7d32")
+        self.style.map(
+            "Success.TButton",
+            background=[("active", "#3a9140"), ("pressed", "#1f6c27"), ("disabled", "#bfd9c1")],
+            foreground=[("disabled", "#f4f8f4")],
+        )
+        self.style.configure("Danger.TButton", padding=(10, 6), foreground="#ffffff", background="#c62828")
+        self.style.map(
+            "Danger.TButton",
+            background=[("active", "#d53d3d"), ("pressed", "#a51f1f"), ("disabled", "#e2baba")],
+            foreground=[("disabled", "#fff7f7")],
+        )
+        self.style.configure("Warning.TButton", padding=(10, 6), foreground="#ffffff", background="#cc6e14")
+        self.style.map(
+            "Warning.TButton",
+            background=[("active", "#dc7f25"), ("pressed", "#b75e0d"), ("disabled", "#ead0b7")],
+            foreground=[("disabled", "#fff9f3")],
+        )
+        self.style.configure("Secondary.TButton", padding=(10, 6), foreground="#1f2937", background="#e5e7eb")
+        self.style.map(
+            "Secondary.TButton",
+            background=[("active", "#d7dbe2"), ("pressed", "#c4cbd6"), ("disabled", "#f0f2f6")],
+            foreground=[("disabled", "#9ca3af")],
+        )
+        self.style.configure("PartTree.Treeview", rowheight=26)
+        self.style.map(
+            "PartTree.Treeview",
+            background=[("selected", "#cfe5ff")],
+            foreground=[("selected", "#0f172a")],
+        )
+
+    @staticmethod
+    def _color_button(parent, text: str, command, *, bg: str, active: str, fg: str = "#ffffff", width: int = 7) -> tk.Button:
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            activebackground=active,
+            fg=fg,
+            activeforeground=fg,
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=6,
+            width=width,
+            font=("Yu Gothic UI", 9, "bold"),
+            disabledforeground="#d1d5db",
         )
 
     def _build_ui(self) -> None:
@@ -312,7 +375,7 @@ class OwlViewApp:
         e.bind("<KeyRelease>", lambda _e: self._refresh_part_list())
 
         cols = ("enabled", "selected", "part_name", "output_name", "output_dir", "format", "orientation", "scale")
-        self.tree = ttk.Treeview(parent, columns=cols, show="headings", selectmode="extended", height=17)
+        self.tree = ttk.Treeview(parent, columns=cols, show="headings", selectmode="extended", height=17, style="PartTree.Treeview")
         headers = {
             "enabled": "使用",
             "selected": "実行対象",
@@ -325,8 +388,11 @@ class OwlViewApp:
         }
         widths = {"enabled": 60, "selected": 80, "part_name": 220, "output_name": 180, "output_dir": 260, "format": 100, "orientation": 70, "scale": 70}
         for c in cols:
-            self.tree.heading(c, text=headers[c])
-            self.tree.column(c, width=widths[c], anchor=tk.W)
+            anchor = tk.CENTER if c in {"enabled", "selected", "format", "orientation", "scale"} else tk.W
+            self.tree.heading(c, text=headers[c], anchor=anchor)
+            self.tree.column(c, width=widths[c], anchor=anchor)
+        self.tree.tag_configure("run_target", background="#edf6ff")
+        self.tree.tag_configure("disabled_row", foreground="#8b93a1")
         self.tree.pack(fill=tk.BOTH, expand=True, pady=6)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Double-1>", self._toggle_on_double_click)
@@ -337,45 +403,65 @@ class OwlViewApp:
             ("追加", self.add_part), ("編集", self.edit_part), ("複製", self.duplicate_selected), ("削除", self.delete_selected),
             ("↑", lambda: self.move_selected(-1)), ("↓", lambda: self.move_selected(1)),
         ]:
-            ttk.Button(b1, text=label, command=cmd).pack(side=tk.LEFT, padx=2)
+            if label == "削除":
+                self._color_button(b1, label, cmd, bg="#d97706", active="#b45309").pack(side=tk.LEFT, padx=2)
+            elif label in {"追加", "編集", "複製"}:
+                self._color_button(b1, label, cmd, bg="#2e7d32", active="#256b2a").pack(side=tk.LEFT, padx=2)
+            else:
+                ttk.Button(b1, text=label, command=cmd, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
 
         b2 = ttk.Frame(parent)
         b2.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(b2, text="一括ON", command=self.select_all_parts).pack(side=tk.LEFT, padx=2)
-        ttk.Button(b2, text="一括OFF", command=self.clear_all_parts).pack(side=tk.LEFT, padx=2)
+        ttk.Button(b2, text="一括ON", command=self.select_all_parts, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(b2, text="一括OFF", command=self.clear_all_parts, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
         ttk.Label(b2, textvariable=self.detail_path_var).pack(side=tk.RIGHT)
 
     def _build_main_controls(self, parent: ttk.Frame) -> None:
-        preview = ttk.LabelFrame(parent, text="プレビュー", padding=3)
+        preview = ttk.LabelFrame(parent, text="プレビュー", padding=6)
         preview.pack(fill=tk.BOTH, expand=True)
         pbar = ttk.Frame(preview)
-        pbar.pack(fill=tk.X, pady=(0, 2))
-        ttk.Button(pbar, text="更新", command=self.refresh_inline_preview).pack(side=tk.LEFT, padx=1)
-        ttk.Button(pbar, text="拡大+", command=lambda: self._change_inline_zoom(1.15)).pack(side=tk.LEFT, padx=1)
-        ttk.Button(pbar, text="縮小-", command=lambda: self._change_inline_zoom(1 / 1.15)).pack(side=tk.LEFT, padx=1)
-        ttk.Button(pbar, text="別窓", command=self.open_preview_window).pack(side=tk.LEFT, padx=1)
+        pbar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(pbar, text="更新", command=self.refresh_inline_preview, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(pbar, text="拡大+", command=lambda: self._change_inline_zoom(1.15), style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(pbar, text="縮小-", command=lambda: self._change_inline_zoom(1 / 1.15), style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(pbar, text="別窓", command=self.open_preview_window, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
         self.inline_preview_status = tk.StringVar(value="パート選択でプレビュー可能")
         ttk.Label(pbar, textvariable=self.inline_preview_status).pack(side=tk.RIGHT)
         self.inline_canvas = tk.Canvas(preview, bg="#202020", height=320)
         self.inline_canvas.pack(fill=tk.BOTH, expand=True)
 
-        ops = ttk.LabelFrame(parent, text="主操作", padding=3)
-        ops.pack(fill=tk.X, pady=(4, 0))
-        ttk.Checkbutton(ops, text="Excel出力のみ実行", variable=self.excel_only_var).pack(side=tk.LEFT, padx=2)
-        ttk.Checkbutton(ops, text="FTP", variable=self.main_ftp_var).pack(side=tk.LEFT, padx=2)
-        ttk.Checkbutton(ops, text="印刷", variable=self.main_print_var).pack(side=tk.LEFT, padx=2)
-        ttk.Label(ops, text="プリンタ").pack(side=tk.LEFT, padx=(8, 2))
-        self.printer_combo = ttk.Combobox(ops, textvariable=self.main_printer_var, state="readonly", width=18)
+        ops = ttk.LabelFrame(parent, text="主操作", padding=8)
+        ops.pack(fill=tk.X, pady=(8, 0))
+        run_row = ttk.Frame(ops)
+        run_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(run_row, text="実行").pack(side=tk.LEFT, padx=(0, 8))
+        self._color_button(run_row, "個別", self.run_single, bg="#0b63ce", active="#0a57b5", width=8).pack(side=tk.LEFT, padx=3)
+        self._color_button(run_row, "選択", self.run_selected, bg="#0b63ce", active="#0a57b5", width=8).pack(side=tk.LEFT, padx=3)
+        self._color_button(run_row, "範囲", self.run_range, bg="#0b63ce", active="#0a57b5", width=8).pack(side=tk.LEFT, padx=3)
+        self._color_button(run_row, "全件", self.run_all, bg="#084c9e", active="#073f82", width=10).pack(side=tk.LEFT, padx=(6, 3))
+
+        stop_row = ttk.Frame(ops)
+        stop_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(stop_row, text="停止").pack(side=tk.LEFT, padx=(0, 8))
+        self._color_button(stop_row, "停止", self.stop_run, bg="#c62828", active="#a61f1f", width=12).pack(side=tk.LEFT, padx=(6, 3))
+
+        attach_row = ttk.Frame(ops)
+        attach_row.pack(fill=tk.X)
+        ttk.Label(attach_row, text="付帯設定").pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(attach_row, text="Excel出力のみ実行", variable=self.excel_only_var).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(attach_row, text="FTP", variable=self.main_ftp_var).pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(attach_row, text="印刷", variable=self.main_print_var).pack(side=tk.LEFT, padx=2)
+        ttk.Label(attach_row, text="プリンタ").pack(side=tk.LEFT, padx=(8, 2))
+        self.printer_combo = ttk.Combobox(attach_row, textvariable=self.main_printer_var, state="readonly", width=18)
         self.printer_combo.pack(side=tk.LEFT, padx=2)
-        ttk.Button(ops, text="再取得", command=self.reload_printers).pack(side=tk.LEFT, padx=2)
-        for label, cmd in [("個別", self.run_single), ("選択", self.run_selected), ("範囲", self.run_range), ("全件", self.run_all), ("停止", self.stop_run)]:
-            ttk.Button(ops, text=label, command=cmd).pack(side=tk.LEFT, padx=1)
+        ttk.Button(attach_row, text="再取得", command=self.reload_printers, style="Secondary.TButton").pack(side=tk.LEFT, padx=4)
 
         util = ttk.Frame(parent)
-        util.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(util, text="詳細設定", command=self.open_detail_settings).pack(side=tk.LEFT, padx=1)
-        ttk.Button(util, text="環境チェック", command=self.run_environment_check).pack(side=tk.LEFT, padx=1)
-        ttk.Button(util, text="出力先を開く", command=self.open_output_dir).pack(side=tk.LEFT, padx=1)
+        util.pack(fill=tk.X, pady=(8, 0))
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(6, 6))
+        ttk.Button(util, text="詳細設定", command=self.open_detail_settings, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(util, text="環境チェック", command=self.run_environment_check, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
+        ttk.Button(util, text="出力先を開く", command=self.open_output_dir, style="Secondary.TButton").pack(side=tk.LEFT, padx=2)
 
     def _build_log_area(self, parent: ttk.Frame) -> None:
         top = ttk.Frame(parent)
@@ -383,6 +469,10 @@ class OwlViewApp:
         ttk.Progressbar(top, variable=self.progress_var, maximum=100, length=220).pack(side=tk.RIGHT)
         self.log_text = tk.Text(parent, height=10)
         self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.tag_configure("success", foreground="#1b5e20")
+        self.log_text.tag_configure("warning", foreground="#b45309")
+        self.log_text.tag_configure("error", foreground="#b91c1c")
+        self.log_text.tag_configure("part", foreground="#1e40af", font=("Yu Gothic UI", 9, "bold"))
         ttk.Label(parent, textvariable=self.status_var).pack(anchor="w")
 
     def _render_part_summary_line(self, summary) -> str:
@@ -485,6 +575,11 @@ class OwlViewApp:
                 "",
                 tk.END,
                 iid=str(idx),
+                tags=tuple(
+                    tag
+                    for tag, enabled in [("run_target", p.selected and p.enabled), ("disabled_row", not p.enabled)]
+                    if enabled
+                ),
                 values=("✓" if p.enabled else "-", "✓" if p.selected else "-", p.part_name, p.output_name, shorten_path(p.output_dir), FORMAT_LABELS.get(p.output_format, p.output_format), ORIENTATION_LABELS.get(p.orientation, p.orientation), f"{p.scale:g}"),
             )
 
@@ -610,7 +705,7 @@ class OwlViewApp:
         c = self.cfg.common
         d = tk.Toplevel(self.root); d.title("詳細設定"); d.geometry("640x520")
         dbg = c.debug
-        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
+        vars = {"home": tk.StringVar(value=c.owlview_home_url), "report": tk.StringVar(value=c.owlview_report_url), "xpath": tk.StringVar(value=c.xpath_input_box), "home_xpath": tk.StringVar(value=c.xpath_home_input_box), "inputtable_xpath": tk.StringVar(value=c.xpath_inputtable_input_box), "report_ready_xpath": tk.StringVar(value=c.xpath_report_ready), "search_ready_xpath": tk.StringVar(value=c.xpath_search_ready), "wait": tk.IntVar(value=c.selenium_wait_sec), "local_dir": tk.StringVar(value=c.default_local_copy_dir), "curl": tk.StringVar(value=c.curl_path), "sumatra": tk.StringVar(value=c.sumatra_path), "ftp_default": tk.BooleanVar(value=self.cfg.job.ftp_default_enabled), "ftp_encryption": tk.StringVar(value=c.ftp_encryption), "ftp_host": tk.StringVar(value=c.ftp_host), "ftp_port": tk.IntVar(value=c.ftp_port), "ftp_user": tk.StringVar(value=c.ftp_username), "ftp_pass": tk.StringVar(value=c.ftp_password), "ftp_path": tk.StringVar(value=c.ftp_remote_path_template), "print_default": tk.BooleanVar(value=self.cfg.job.print_default_enabled), "default_printer": tk.StringVar(value=c.default_printer_name), "default_copies": tk.IntVar(value=c.default_print_copies), "auto_save": tk.BooleanVar(value=c.auto_save_settings), "strict_episode": tk.BooleanVar(value=c.excel_only_fail_on_episode_mismatch), "mismatch_suffix": tk.BooleanVar(value=c.inputtable_episode_mismatch_suffix), "dbg_enabled": tk.BooleanVar(value=dbg.enabled), "dbg_headless": tk.BooleanVar(value=dbg.headless), "dbg_verbose": tk.BooleanVar(value=dbg.verbose_log), "dbg_shot": tk.BooleanVar(value=dbg.save_screenshot_on_error), "dbg_html": tk.BooleanVar(value=dbg.save_html_on_error), "dbg_wait": tk.IntVar(value=dbg.selenium_wait_timeout), "dbg_settle": tk.DoubleVar(value=dbg.input_settle_wait), "dbg_report_direct": tk.BooleanVar(value=dbg.report_direct_navigation)}
 
         outer = ttk.Frame(d, padding=6)
         outer.pack(fill=tk.BOTH, expand=True)
@@ -631,9 +726,11 @@ class OwlViewApp:
         _add_entry(sec_web, 0, "Home URL", "home")
         _add_entry(sec_web, 1, "Report URL", "report")
         _add_entry(sec_web, 2, "入力 XPath", "xpath")
-        _add_entry(sec_web, 3, "検索反映待機 XPath(任意)", "search_ready_xpath")
-        _add_entry(sec_web, 4, "Report到達要素 XPath(任意)", "report_ready_xpath")
-        _add_entry(sec_web, 5, "待機秒数", "wait")
+        _add_entry(sec_web, 3, "Home 入力 XPath", "home_xpath")
+        _add_entry(sec_web, 4, "inputtable 入力 XPath", "inputtable_xpath")
+        _add_entry(sec_web, 5, "検索反映待機 XPath(任意)", "search_ready_xpath")
+        _add_entry(sec_web, 6, "Report到達要素 XPath(任意)", "report_ready_xpath")
+        _add_entry(sec_web, 7, "待機秒数", "wait")
 
         sec_tool = ttk.LabelFrame(body, text="外部ツール/出力", padding=6); sec_tool.pack(fill=tk.X, pady=(0, 6)); sec_tool.columnconfigure(1, weight=1)
         _add_entry(sec_tool, 0, "ローカルコピー先", "local_dir")
@@ -659,6 +756,10 @@ class OwlViewApp:
         _add_entry(sec_print, 2, "デフォルト部数", "default_copies")
         ttk.Label(sec_print, text="自動保存").grid(row=3, column=0, sticky="w", padx=4, pady=2)
         ttk.Checkbutton(sec_print, variable=vars["auto_save"]).grid(row=3, column=1, sticky="w")
+        ttk.Label(sec_print, text="Excel only 不一致を失敗").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_print, variable=vars["strict_episode"]).grid(row=4, column=1, sticky="w")
+        ttk.Label(sec_print, text="不一致時 _mismatch 保存").grid(row=5, column=0, sticky="w", padx=4, pady=2)
+        ttk.Checkbutton(sec_print, variable=vars["mismatch_suffix"]).grid(row=5, column=1, sticky="w")
 
         sec_debug = ttk.LabelFrame(body, text="Debug", padding=6); sec_debug.pack(fill=tk.X, pady=(6, 0)); sec_debug.columnconfigure(1, weight=1)
         ttk.Label(sec_debug, text="Debug有効").grid(row=0, column=0, sticky="w", padx=4, pady=2)
@@ -677,7 +778,7 @@ class OwlViewApp:
         ttk.Checkbutton(sec_debug, variable=vars["dbg_report_direct"]).grid(row=7, column=1, sticky="w")
 
         def _save_detail() -> None:
-            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get())
+            c.owlview_home_url = vars["home"].get(); c.owlview_report_url = vars["report"].get(); c.xpath_input_box = vars["xpath"].get(); c.xpath_home_input_box = vars["home_xpath"].get(); c.xpath_inputtable_input_box = vars["inputtable_xpath"].get(); c.xpath_report_ready = vars["report_ready_xpath"].get(); c.xpath_search_ready = vars["search_ready_xpath"].get(); c.selenium_wait_sec = int(vars["wait"].get()); c.default_local_copy_dir = vars["local_dir"].get(); c.curl_path = vars["curl"].get(); c.sumatra_path = vars["sumatra"].get(); c.ftp_encryption = vars["ftp_encryption"].get(); c.ftp_host = vars["ftp_host"].get(); c.ftp_port = int(vars["ftp_port"].get()); c.ftp_username = vars["ftp_user"].get(); c.ftp_password = vars["ftp_pass"].get(); c.ftp_remote_path_template = vars["ftp_path"].get(); c.default_printer_name = vars["default_printer"].get(); c.default_print_copies = int(vars["default_copies"].get()); c.auto_save_settings = bool(vars["auto_save"].get()); c.excel_only_fail_on_episode_mismatch = bool(vars["strict_episode"].get()); c.inputtable_episode_mismatch_suffix = bool(vars["mismatch_suffix"].get())
             self.cfg.job.ftp_default_enabled = bool(vars["ftp_default"].get()); self.cfg.job.print_default_enabled = bool(vars["print_default"].get())
             c.debug.enabled = bool(vars["dbg_enabled"].get()); c.debug.headless = bool(vars["dbg_headless"].get()); c.debug.verbose_log = bool(vars["dbg_verbose"].get()); c.debug.save_screenshot_on_error = bool(vars["dbg_shot"].get()); c.debug.save_html_on_error = bool(vars["dbg_html"].get()); c.debug.selenium_wait_timeout = int(vars["dbg_wait"].get()); c.debug.input_settle_wait = float(vars["dbg_settle"].get()); c.debug.report_direct_navigation = bool(vars["dbg_report_direct"].get())
             self._invalidate_preview_caches()
@@ -790,6 +891,8 @@ class OwlViewApp:
             "home": self.cfg.common.owlview_home_url,
             "report": self.cfg.common.owlview_report_url,
             "xpath": self.cfg.common.xpath_input_box,
+            "home_xpath": self.cfg.common.xpath_home_input_box,
+            "inputtable_xpath": self.cfg.common.xpath_inputtable_input_box,
             "wait": self.cfg.common.selenium_wait_sec,
             "wait_debug": self.cfg.common.debug.selenium_wait_timeout,
             "report_direct_navigation": self.cfg.common.debug.report_direct_navigation,
@@ -957,7 +1060,17 @@ class OwlViewApp:
         self._log(f"詳細ログ保存: {log_file}")
 
     def _log(self, text: str) -> None:
-        self.log_text.insert(tk.END, text + "\n"); self.log_text.see(tk.END)
+        tags: list[str] = []
+        upper = text.upper()
+        if text.startswith("[PART]"):
+            tags.append("part")
+        elif any(x in upper for x in ["失敗", "ERROR", "NG", "Traceback"]):
+            tags.append("error")
+        elif "WARNING" in upper or "警告" in text:
+            tags.append("warning")
+        elif any(x in upper for x in ["成功", "完了", "OK"]):
+            tags.append("success")
+        self.log_text.insert(tk.END, text + "\n", tuple(tags)); self.log_text.see(tk.END)
 
     def on_close(self) -> None:
         self.cfg.common.default_printer_name = self.main_printer_var.get()

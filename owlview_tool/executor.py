@@ -11,9 +11,10 @@ from datetime import datetime
 from queue import Queue
 
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, ElementNotInteractableException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -178,7 +179,7 @@ class Runner:
         self._wait_ready_state(driver, self._wait_timeout(), "homeページ遷移成功")
 
     def select_part(self, driver, part_name: str) -> None:
-        self._input_part_name(driver, part_name)
+        self._input_part_name(driver, part_name, page="home")
 
     def open_report(self, driver) -> None:
         self._navigate_to_report(driver)
@@ -207,6 +208,25 @@ class Runner:
             base += f"_{part}"
         base += f"_{today}"
         return sanitize_filename(base) + ".xlsx"
+
+    def _resolve_input_selectors(self, page: str) -> list[tuple[str, str]]:
+        common = self.cfg.common
+        selectors: list[tuple[str, str]] = []
+        preferred_xpath = (common.xpath_home_input_box if page == "home" else common.xpath_inputtable_input_box).strip()
+        fallback_xpath = (common.xpath_input_box or "").strip()
+        if preferred_xpath:
+            selectors.append((f"{page}_xpath", preferred_xpath))
+        if fallback_xpath and fallback_xpath != preferred_xpath:
+            selectors.append(("legacy_xpath_input_box", fallback_xpath))
+        selectors.extend(
+            [
+                ("css_header_episode_input", ".HeaderCommonEpisodeName input"),
+                ("css_header_input", "header input[type='text']"),
+                ("css_input_text", "input[type='text']"),
+                ("css_input_no_type", "input:not([type])"),
+            ]
+        )
+        return selectors
 
     def _wait_inputtable_grid_ready(self, driver, timeout: int) -> None:
         def _ready(d) -> bool:
@@ -575,24 +595,10 @@ return {
     def _switch_inputtable_part(self, driver, part_name: str) -> None:
         normalized_part = self._normalize_label(part_name)
         self._log(f"inputtableパート切替開始: target={normalized_part}")
-        self._input_part_name(driver, part_name)
+        self._input_part_name(driver, part_name, page="inputtable")
         timeout = self._wait_timeout()
         self._wait_inputtable_grid_ready(driver, timeout)
-        try:
-            WebDriverWait(driver, timeout).until(
-                lambda d: self._normalize_label(
-                    str(
-                        d.execute_script(
-                            "const el=document.querySelector('.HeaderCommonEpisodeName span:nth-of-type(2)');"
-                            "return el ? (el.textContent || '') : '';"
-                        )
-                    )
-                )
-                == normalized_part
-            )
-            self._log(f"inputtableパート切替反映確認: episode={normalized_part}")
-        except TimeoutException:
-            self._log("inputtableパート切替反映待機タイムアウト: payload抽出時に不一致チェックを実施")
+        self._wait_episode_match(driver, normalized_part, timeout=timeout)
         time.sleep(self._input_settle_wait())
 
     def _run_inputtable_export_if_enabled(self, driver, part: PartConfig, *, force: bool = False, continue_on_error: bool = True) -> Path | None:
@@ -625,9 +631,17 @@ return {
                 raise RuntimeError(f"inputtable抽出失敗: {last_error}")
             expected_part = self._normalize_label(part.part_name)
             payload_episode = self._normalize_label(str(payload.get("episode", "")))
-            if payload_episode and payload_episode != expected_part:
-                self._log(f"WARNING inputtable episode不一致: part={expected_part} payload.episode={payload_episode}")
-            out_path = output_dir / self._build_excel_filename(part.part_name, payload)
+            strict_mismatch = self.excel_only_mode and self.cfg.common.excel_only_fail_on_episode_mismatch
+            mismatch = payload_episode != expected_part
+            if mismatch:
+                msg = f"inputtable episode不一致: part={expected_part} payload.episode={payload_episode or '(empty)'}"
+                if strict_mismatch:
+                    raise RuntimeError(f"Excel only mismatch NG: {msg}")
+                self._log(f"WARNING {msg}")
+            filename_part = part.part_name
+            if mismatch and self.cfg.common.inputtable_episode_mismatch_suffix:
+                filename_part = f"{part.part_name}_mismatch"
+            out_path = output_dir / self._build_excel_filename(filename_part, payload)
             self._log(
                 f"inputtable出力検証: part={expected_part} / payload.episode={payload_episode or '(empty)'} / file={out_path.name}"
             )
@@ -645,6 +659,10 @@ return {
             return out_path
         except Exception as exc:
             self._log(f"inputtable前処理失敗(続行): {exc} / current_url={driver.current_url}")
+            shot, html, snippet = self._capture_debug_artifacts(driver, "inputtable_export_error")
+            self._log(f"inputtable debug artifacts: shot={shot} html={html}")
+            if snippet:
+                self._log(f"inputtable page snippet: {snippet}", verbose=True)
             if not continue_on_error:
                 raise
             return None
@@ -708,12 +726,28 @@ return {
                 self._log(f"page_source抜粋: {snippet}", verbose=True)
             raise
 
-    def _find_input(self, driver, timeout: int):
-        locator = (By.XPATH, self.cfg.common.xpath_input_box)
-        WebDriverWait(driver, timeout).until(EC.presence_of_element_located(locator))
-        WebDriverWait(driver, timeout).until(EC.visibility_of_element_located(locator))
-        WebDriverWait(driver, timeout).until(EC.element_to_be_clickable(locator))
-        return driver.find_element(*locator)
+    def _find_input(self, driver, timeout: int, *, page: str):
+        selected = ""
+        for name, selector in self._resolve_input_selectors(page):
+            self._log(f"入力欄探索: page={page} selector={name}:{selector}", verbose=True)
+            try:
+                if "xpath" in name:
+                    locator = (By.XPATH, selector)
+                    WebDriverWait(driver, min(timeout, 3)).until(EC.presence_of_element_located(locator))
+                    el = driver.find_element(*locator)
+                else:
+                    candidates = driver.find_elements(By.CSS_SELECTOR, selector)
+                    visible = [el for el in candidates if el.is_displayed() and el.is_enabled()]
+                    if not visible:
+                        continue
+                    el = visible[0]
+                driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", el)
+                selected = f"{name}:{selector}"
+                return el, selected
+            except Exception as exc:
+                self._log(f"入力欄探索失敗: {name} reason={exc}", verbose=True)
+                continue
+        raise TimeoutException(f"入力欄が見つかりません page={page} last_selector={selected or '(none)'}")
 
     @staticmethod
     def _read_input_value(box) -> str:
@@ -751,11 +785,17 @@ return {
                 uniq.append(text)
         return uniq
 
-    def _brief_wait_after_input(self, driver, timeout: int, before_url: str) -> None:
+    def _brief_wait_after_input(self, driver, timeout: int, before_url: str, before_episode: str, before_grid_rows: int) -> None:
         search_xpath = (self.cfg.common.xpath_search_ready or "").strip()
 
         def _ready(d) -> bool:
             if d.current_url != before_url:
+                return True
+            now_episode = self._current_episode_name(d)
+            if now_episode and now_episode != before_episode:
+                return True
+            now_rows = self._grid_row_count(d)
+            if now_rows != before_grid_rows:
                 return True
             if search_xpath:
                 try:
@@ -771,48 +811,152 @@ return {
             self._log(f"入力後短時間待機: 反映検知なし (許容) current_url={driver.current_url}", verbose=True)
         time.sleep(self._input_settle_wait())
 
-    def _input_part_name(self, driver, part_name: str) -> None:
+    def _current_episode_name(self, driver) -> str:
+        try:
+            return self._normalize_label(
+                str(
+                    driver.execute_script(
+                        "const el=document.querySelector('.HeaderCommonEpisodeName span:nth-of-type(2)');"
+                        "return el ? (el.textContent || '') : '';"
+                    )
+                )
+            )
+        except Exception:
+            return ""
+
+    def _grid_row_count(self, driver) -> int:
+        try:
+            return int(
+                driver.execute_script(
+                    "const a=document.querySelectorAll('#grid .ht_master tbody tr').length;"
+                    "const b=document.querySelectorAll('#grid tbody tr').length;"
+                    "return Math.max(a,b,0);"
+                )
+            )
+        except Exception:
+            return 0
+
+    def _wait_episode_match(self, driver, target: str, *, timeout: int) -> None:
+        try:
+            WebDriverWait(driver, timeout).until(lambda d: self._current_episode_name(d) == target)
+            self._log(f"inputtableパート切替反映確認: episode={target}")
+        except TimeoutException as exc:
+            current = self._current_episode_name(driver)
+            raise RuntimeError(f"episode反映待機タイムアウト target={target} current={current or '(empty)'}") from exc
+
+    def _input_debug_dump(self, driver, selector: str) -> None:
+        try:
+            detail = driver.execute_script(
+                """
+const selector = arguments[0];
+const active = document.activeElement;
+const target = document.querySelector(selector);
+const opts = Array.from(document.querySelectorAll("[role='option'], li, [class*='option'], [class*='suggest']"))
+  .map(el => (el.textContent || '').trim())
+  .filter(Boolean)
+  .slice(0, 10);
+const episode = (() => {
+  const el = document.querySelector('.HeaderCommonEpisodeName span:nth-of-type(2)');
+  return el ? (el.textContent || '').trim() : '';
+})();
+return {
+  active: active ? { tag: active.tagName, id: active.id || '', className: active.className || '' } : null,
+  input_outer_html: target ? target.outerHTML : '',
+  options: opts,
+  episode,
+};
+""",
+                selector,
+            )
+            self._log(f"input失敗デバッグ current_url={driver.current_url} selector={selector}")
+            self._log(f"input失敗デバッグ activeElement={detail.get('active')}")
+            self._log(f"input失敗デバッグ episode={detail.get('episode')}")
+            self._log(f"input失敗デバッグ options={detail.get('options')}")
+            self._log(f"input失敗デバッグ input_outer_html={detail.get('input_outer_html')}", verbose=True)
+        except Exception as exc:
+            self._log(f"input失敗デバッグ取得失敗: {exc}")
+
+    def _input_part_name(self, driver, part_name: str, *, page: str = "home") -> None:
         timeout = self._wait_timeout()
         last_exc: Exception | None = None
+        last_selector = ""
+        normalized_part = self._normalize_label(part_name)
         self._log(f"開始時URL: {driver.current_url}", verbose=True)
-        self._log(f"入力XPath: {self.cfg.common.xpath_input_box}", verbose=True)
-        self._log(f"入力対象part_name: {part_name}")
-        self._wait_ready_state(driver, timeout, "homeページ遷移成功")
+        self._log(f"入力対象part_name: {part_name} page={page}")
+        self._wait_ready_state(driver, timeout, f"{page}ページ遷移成功")
 
         for attempt in range(1, 4):
             try:
-                box = self._find_input(driver, timeout)
-                self._log("XPath要素取得成功", verbose=True)
-
-                strategies = [
-                    ("send_keys", lambda el: (el.click(), el.clear(), el.send_keys(part_name))),
-                    ("send_keys_after_focus", lambda el: (driver.execute_script("arguments[0].focus();", el), el.clear(), el.send_keys(part_name))),
-                    ("js_value_set", lambda el: self._set_input_value_js(driver, el, part_name)),
-                ]
-
-                for strategy_name, setter in strategies:
-                    box = self._find_input(driver, timeout)
-                    setter(box)
-                    current = self._read_input_value(box)
-                    self._log(f"入力戦略={strategy_name} / value='{current}'", verbose=True)
-                    if current == part_name:
-                        candidates = self._collect_candidate_texts(driver)
-                        self._log(f"候補一覧: {len(candidates)}件 / 先頭={candidates[:5]}", verbose=True)
-                        before_wait = driver.current_url
-                        self._brief_wait_after_input(driver, timeout, before_wait)
-                        return
-
-                raise RuntimeError("取得は成功したが値が入らなかった")
+                box, last_selector = self._find_input(driver, timeout, page=page)
+                before_wait = driver.current_url
+                before_episode = self._current_episode_name(driver)
+                before_rows = self._grid_row_count(driver)
+                driver.execute_script("arguments[0].scrollIntoView({block:'center', inline:'nearest'});", box)
+                box.click()
+                try:
+                    box.send_keys(Keys.CONTROL, "a")
+                    box.send_keys(Keys.BACKSPACE)
+                except Exception:
+                    self._set_input_value_js(driver, box, "")
+                if self._read_input_value(box):
+                    self._set_input_value_js(driver, box, "")
+                box.send_keys(part_name)
+                if self._read_input_value(box) != part_name:
+                    self._set_input_value_js(driver, box, part_name)
+                candidates = self._collect_candidate_texts(driver)
+                self._log(f"候補一覧: {len(candidates)}件 / 先頭10={candidates[:10]} selector={last_selector}", verbose=True)
+                exact = next((c for c in candidates if self._normalize_label(c) == normalized_part), None)
+                if exact:
+                    clicked = bool(
+                        driver.execute_script(
+                            """
+const target = arguments[0];
+const normalize = (s) => String(s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+const nodes = Array.from(document.querySelectorAll("[role='option'], li, [class*='option'], [class*='suggest']"));
+for (const el of nodes) {
+  if (!el || !el.offsetParent) continue;
+  if (normalize(el.textContent) === normalize(target)) {
+    el.scrollIntoView({block:'nearest', inline:'nearest'});
+    el.click();
+    return true;
+  }
+}
+return false;
+""",
+                            exact,
+                        )
+                    )
+                    self._log(f"候補完全一致クリック: {exact} clicked={clicked}", verbose=True)
+                else:
+                    box.send_keys(Keys.ENTER)
+                    self._log("候補完全一致なし: Enter確定", verbose=True)
+                self._brief_wait_after_input(driver, timeout, before_wait, before_episode, before_rows)
+                self._wait_episode_match(driver, normalized_part, timeout=timeout)
+                return
             except StaleElementReferenceException as exc:
                 last_exc = exc
                 self._log(f"stale element 発生。再取得して再試行 ({attempt}/3)", verbose=True)
                 time.sleep(0.2)
+            except ElementNotInteractableException as exc:
+                last_exc = exc
+                self._log(f"input要素が操作不可。再試行 ({attempt}/3): {exc}")
+                time.sleep(0.3)
+            except ElementClickInterceptedException as exc:
+                last_exc = exc
+                self._log(f"クリックが遮蔽。再試行 ({attempt}/3): {exc}")
+                time.sleep(0.3)
             except (TimeoutException, RuntimeError, WebDriverException) as exc:
                 last_exc = exc
                 self._log(f"入力処理失敗 ({attempt}/3): {exc}")
+                debug_selector = last_selector.split(":", 1)[1] if ":" in last_selector else "input[type='text']"
+                self._input_debug_dump(driver, debug_selector)
+                shot, html, snippet = self._capture_debug_artifacts(driver, "input_part_name_error")
+                self._log(f"input操作失敗時アーティファクト: shot={shot} html={html}")
+                if snippet:
+                    self._log(f"input操作失敗page_source抜粋: {snippet}", verbose=True)
                 time.sleep(0.2)
 
-        raise RuntimeError(f"入力欄操作に失敗しました: {last_exc}")
+        raise RuntimeError(f"入力欄操作に失敗しました: {last_exc} selector={last_selector or '(unknown)'}")
 
     def _wait_report_marker(self, driver, timeout: int) -> None:
         custom_xpath = self.cfg.common.xpath_report_ready.strip()
