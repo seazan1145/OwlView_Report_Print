@@ -14,6 +14,7 @@ class PartConfig:
     enabled: bool = True
     selected: bool = False
     part_name: str = ""
+    input_text: str = ""
     output_name: str = ""
     output_dir: str = ""
     output_format: OutputFormat = "pdf"

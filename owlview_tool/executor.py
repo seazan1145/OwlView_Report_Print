@@ -178,8 +178,12 @@ class Runner:
         self._log(f"homeページ遷移成功: {driver.current_url}")
         self._wait_ready_state(driver, self._wait_timeout(), "homeページ遷移成功")
 
-    def select_part(self, driver, part_name: str) -> None:
-        self._input_part_name(driver, part_name, page="home")
+    @staticmethod
+    def _resolve_input_text(part: PartConfig) -> str:
+        return (part.input_text or part.part_name).strip()
+
+    def select_part(self, driver, part: PartConfig) -> None:
+        self._input_part_name(driver, self._resolve_input_text(part), page="home")
 
     def open_report(self, driver) -> None:
         self._navigate_to_report(driver)
@@ -592,13 +596,14 @@ return {
             self._log("inputtable前処理: DOMフォールバックは可視範囲のみの可能性あり (partial extraction suspected)")
         return payload
 
-    def _switch_inputtable_part(self, driver, part_name: str) -> None:
-        normalized_part = self._normalize_label(part_name)
+    def _switch_inputtable_part(self, driver, part: PartConfig) -> None:
+        input_text = self._resolve_input_text(part)
+        normalized_part = self._normalize_label(input_text)
         if not self.cfg.common.enable_inputtable_page_part_switch:
             self._log("inputtableパート切替は無効設定のためスキップ")
             return
         self._log(f"inputtableパート切替開始(オプション): target={normalized_part}")
-        self._input_part_name(driver, part_name, page="inputtable")
+        self._input_part_name(driver, input_text, page="inputtable")
         timeout = self._wait_timeout()
         self._wait_inputtable_grid_ready(driver, timeout)
         self._wait_episode_match(driver, normalized_part, timeout=timeout)
@@ -632,11 +637,11 @@ return {
             return None
         output_dir = self._resolve_excel_output_dir(part)
         self._log(f"inputtable前処理: 開始 ({part.part_name})")
-        target_part = self._normalize_label(part.part_name)
+        target_part = self._normalize_label(self._resolve_input_text(part))
         timeout = self._wait_timeout()
         try:
             self.open_home(driver)
-            self.select_part(driver, part.part_name)
+            self.select_part(driver, part)
             self._log(
                 f"homeパート選択結果: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
             )
@@ -652,7 +657,7 @@ return {
             if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
                 self._log("inputtable episode不一致のためhomeで再選択を実施")
                 self.open_home(driver)
-                self.select_part(driver, part.part_name)
+                self.select_part(driver, part)
                 self._log(
                     f"home再選択結果: episode={self._current_episode_name(driver) or '(empty)'} target={target_part} current_url={driver.current_url}"
                 )
@@ -662,7 +667,7 @@ return {
                 self._wait_ready_state(driver, timeout, "inputtable再遷移")
                 self._wait_inputtable_grid_ready(driver, timeout)
                 if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
-                    self._switch_inputtable_part(driver, part.part_name)
+                    self._switch_inputtable_part(driver, part)
                     if not self._ensure_inputtable_episode_match(driver, target_part, timeout=timeout):
                         self._log_inputtable_context(driver, target_part, prefix="inputtable再選択後不一致")
                         raise RuntimeError(f"inputtable episode不一致が解消されません target={target_part}")
@@ -1113,7 +1118,7 @@ return false;
     def _run_capture_pipeline(self, driver, part: PartConfig, preview_mode: bool = False) -> tuple[list[Path], Path | None]:
         self._log("プレビュー開始" if preview_mode else f"開始: {part.part_name}")
         self.open_home(driver)
-        self.select_part(driver, part.part_name)
+        self.select_part(driver, part)
         if not preview_mode:
             self._run_inputtable_export_if_enabled(driver, part)
         self.open_report(driver)
